@@ -319,11 +319,11 @@ System dependency for ExifTool path: `brew install exiftool` (macOS), `apt insta
 - **Delivered:** Working CLI app, tested on 542 photos, producing 57-column spreadsheet
 
 ### Phase 2 — Polish & Robustness
-- [ ] GUI folder picker dialog (tkinter)
+- [x] GUI folder picker dialog (tkinter)
 - [ ] Handle edge cases: corrupt files, missing metadata, permission errors
 - [ ] Add error log sheet (skipped files with reasons)
 - [ ] IPTC field extraction (for Lightroom/Bridge-processed photos)
-- [ ] Date columns as proper Excel date format (not strings)
+- [x] Date columns as proper Excel date format (not strings)
 
 ### Phase 3 — Distribution
 - [ ] Package as standalone executable (PyInstaller)
