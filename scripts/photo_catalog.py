@@ -40,6 +40,31 @@ EXIF_SENSING_METHOD = {1: 'Not defined', 2: 'One-chip color area', 3: 'Two-chip 
                        7: 'Trilinear', 8: 'Color sequential linear'}
 EXIF_COLOR_SPACE = {1: 'sRGB', 65535: 'Uncalibrated'}
 
+# Claude changes 2026 03 14
+# Date columns that should be stored as proper Excel datetime values
+DATE_COLUMNS = {'DateTimeOriginal', 'DateTimeDigitized', 'DateTimeModified'}
+
+# EXIF date formats to try when parsing
+EXIF_DATE_FORMATS = [
+    '%Y:%m:%d %H:%M:%S',    # Standard EXIF: 2024:03:14 10:30:00
+    '%Y-%m-%d %H:%M:%S',    # ISO-style:     2024-03-14 10:30:00
+    '%Y:%m:%d',              # Date only:     2024:03:14
+    '%Y-%m-%d',              # ISO date only: 2024-03-14
+]
+
+
+def parse_exif_date(value):
+    """Try to parse an EXIF date string into a Python datetime object.
+    Returns the datetime if successful, or the original string if not."""
+    if not value or not isinstance(value, str):
+        return value
+    date_str = str(value).strip()[:19]
+    for fmt in EXIF_DATE_FORMATS:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+    return value
 
 def scan_folder(folder_path):
     files = []
@@ -398,12 +423,25 @@ def write_excel(all_rows, output_path, folder_name):
         cell.fill = header_fill
         cell.alignment = header_align
 
+    # Claude Suggested Change 2026 03 14
+    # Excel date format string
+    date_number_format = 'YYYY-MM-DD HH:MM:SS'
+
     # Write data
     for row_idx, row_data in enumerate(all_rows, 2):
         for col_idx, col_name in enumerate(columns, 1):
             val = row_data.get(col_name)
+
+            # Convert date columns to proper Excel datetime values
+            if col_name in DATE_COLUMNS and val is not None:
+                val = parse_exif_date(val)
+
             cell = ws.cell(row=row_idx, column=col_idx, value=val)
             cell.font = cell_font
+
+            # Apply date format if this is a date column with a datetime value
+            if col_name in DATE_COLUMNS and isinstance(val, datetime):
+                cell.number_format = date_number_format
             cell.alignment = cell_align
             cell.border = thin_border
             if row_idx % 2 == 0:
