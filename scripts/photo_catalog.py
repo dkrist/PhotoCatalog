@@ -1,6 +1,23 @@
 """
-Photo Catalog App — Extracts all EXIF/XMP metadata from photos in a folder
-and writes a formatted Excel spreadsheet with one row per photo.
+photo_catalog.py — Core engine for the PhotoCatalog application.
+
+This module handles all the heavy lifting:
+  - Scanning folders for supported image files
+  - Extracting EXIF metadata via Pillow (PIL)
+  - Extracting XMP metadata by parsing embedded XML
+  - Converting GPS coordinates to decimal degrees
+  - Parsing EXIF date strings into Python datetime objects
+  - Building formatted Excel workbooks with Catalog and Summary sheets
+
+Key Functions:
+  scan_folder(folder)            — Recursively find all supported image files
+  extract_metadata(filepath)     — Extract all EXIF + XMP data from one image
+  write_excel(rows, path, name)  — Write metadata rows to a formatted .xlsx file
+
+Dependencies:
+  - Pillow (PIL) for image opening and EXIF tag reading
+  - openpyxl for Excel workbook creation and formatting
+  - xml.etree.ElementTree for XMP/XML parsing
 """
 import os
 import re
@@ -17,6 +34,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
 from openpyxl.utils import get_column_letter
 
+# ---------------------------------------------------------------------------
+# EXIF tag value lookups (duplicated from config.py for standalone use)
+# ---------------------------------------------------------------------------
 SUPPORTED_EXTENSIONS = {'.jpg', '.jpeg', '.tif', '.tiff', '.png', '.heif', '.heic', '.webp',
                         '.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2'}
 
@@ -41,7 +61,13 @@ EXIF_SENSING_METHOD = {1: 'Not defined', 2: 'One-chip color area', 3: 'Two-chip 
 EXIF_COLOR_SPACE = {1: 'sRGB', 65535: 'Uncalibrated'}
 
 # Claude changes 2026 03 14
-# Date columns that should be stored as proper Excel datetime values
+# ---------------------------------------------------------------------------
+# Date handling — Phase 2 enhancement
+# ---------------------------------------------------------------------------
+# These constants and functions convert EXIF date strings
+# (e.g., "2024:01:15 14:30:00") into Python datetime objects so they
+# can be stored as proper Excel dates (sortable, filterable) rather
+# than plain text strings.
 DATE_COLUMNS = {'DateTimeOriginal', 'DateTimeDigitized', 'DateTimeModified'}
 
 # EXIF date formats to try when parsing
@@ -67,6 +93,19 @@ def parse_exif_date(value):
     return value
 
 def scan_folder(folder_path):
+    """
+    Recursively scan a folder for supported image files.
+
+    Walks the directory tree and collects all files whose extensions
+    match SUPPORTED_EXTENSIONS. Files are sorted alphabetically by
+    full path for consistent output ordering.
+
+    Args:
+        folder (str): Path to the root folder to scan.
+
+    Returns:
+        list[str]: Sorted list of absolute file paths for supported images.
+    """
     files = []
     for f in sorted(os.listdir(folder_path)):
         ext = Path(f).suffix.lower()
@@ -91,6 +130,19 @@ def convert_gps_to_decimal(gps_coords, gps_ref):
 
 
 def format_exposure_time(val):
+    """
+    Format an exposure time value as a human-readable string.
+
+    EXIF stores exposure as a float (e.g., 0.004). This converts it to
+    a fraction like "1/250" for short exposures, or a decimal like "2.0"
+    for long exposures.
+
+    Args:
+        val: The raw exposure time value from EXIF data.
+
+    Returns:
+        str: Formatted exposure string, or the original value as string.
+    """
     if val is None:
         return None
     try:
@@ -104,6 +156,19 @@ def format_exposure_time(val):
 
 
 def format_lens_spec(spec):
+    """
+    Format a lens specification tuple into a readable string.
+
+    EXIF stores lens info as a 4-element tuple:
+    (min_focal, max_focal, min_aperture, max_aperture).
+    This formats it as "18.0-55.0mm f/3.5-5.6".
+
+    Args:
+        spec: Tuple of (min_focal, max_focal, min_fstop, max_fstop).
+
+    Returns:
+        str or None: Formatted lens spec, or None if input is empty.
+    """
     if not spec:
         return None
     try:
@@ -113,6 +178,22 @@ def format_lens_spec(spec):
 
 
 def extract_exif(filepath):
+    """
+    Extract EXIF metadata from an image file using Pillow.
+
+    Opens the image, reads its EXIF data, and maps raw tag values to
+    human-readable column names. Handles special processing for:
+      - GPS coordinates (converted to decimal degrees)
+      - Exposure time (formatted as fractions)
+      - Lookup values (flash mode, metering, orientation, etc.)
+
+    Args:
+        filepath (str): Path to the image file.
+
+    Returns:
+        dict: Key-value pairs of extracted metadata fields.
+              Keys are column names (e.g., 'CameraMake', 'ISO').
+    """
     data = {}
     try:
         img = Image.open(filepath)
@@ -264,6 +345,19 @@ def extract_exif(filepath):
 
 
 def extract_xmp(filepath):
+    """
+    Extract raw XMP/XML metadata string from an image file.
+
+    XMP data is embedded as an XML document inside the image file,
+    delimited by '<x:xmpmeta' and '</x:xmpmeta>' markers. This function
+    reads the file in binary mode and searches for these markers.
+
+    Args:
+        filepath (str): Path to the image file.
+
+    Returns:
+        str or None: The XMP XML string if found, None otherwise.
+    """
     data = {}
     try:
         with open(filepath, 'rb') as f:
@@ -398,6 +492,24 @@ def build_column_list(all_rows):
 
 
 def write_excel(all_rows, output_path, folder_name):
+    """
+    Write all metadata to a formatted Excel workbook.
+
+    Creates a workbook with two sheets:
+      - Catalog: One row per photo with all metadata columns, formatted with
+        headers, alternating row colors, auto-filter, and frozen header row.
+        Date columns use proper Excel date formatting (Phase 2 enhancement).
+      - Summary: Statistics overview including photo count, date range,
+        camera/lens breakdown, exposure stats, GPS coverage, and face data.
+
+    Args:
+        all_rows (list[dict]): Metadata rows from extract_metadata().
+        output_path (str): Full path for the output .xlsx file.
+        folder_name (str): Name of the scanned folder (shown in Summary).
+
+    Returns:
+        tuple[int, int]: (number_of_columns, number_of_rows) written.
+    """
     columns = build_column_list(all_rows)
 
     wb = Workbook()
