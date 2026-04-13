@@ -6,6 +6,31 @@ All notable changes to the Photo Catalog App project are documented in this file
 
 ## [Unreleased] — 2026-04-13
 
+### Added — Desktop UI (PyQt6)
+
+- **`scripts/gui_main.py`** — new PyQt6 desktop UI matching the project
+  wireframe (`Images/PhotoCatalog UI Wireframe.png`). Features:
+  - Header with camera icon, title, version, and "Built with Claude" badge
+    using the PNGs in `Images/`.
+  - "Select Photo Folder" and "Save Report to Folder" inputs with Browse
+    buttons that open modal folder-select dialogs.
+  - Green **Start Cataloging Process** button that disables during a run.
+  - Live **Progress** bar with a `current/total` counter formatted as
+    `nnn,nnn/nnn,nnn`.
+  - **Open Catalog Report** button (enabled after a successful run).
+  - **Process Log Messages** panel that tails the run in real time, plus
+    an **Open Process Log** button to open the full log file.
+- **`scripts/catalog_pipeline.py`** — extracted reusable `run_catalog()`
+  function used by both the CLI (`run_catalog.py`) and the new GUI, with
+  support for progress callbacks, log callbacks, and cooperative
+  cancellation via `threading.Event`.
+- **`scripts/run_gui.py`** — launcher script for the UI.
+- Folder inputs pre-populate from `default_scan_folder` and
+  `save_report_to` settings; both are saved back after each run.
+- Pipeline runs on a `QThread` with `pyqtSignal` updates so the UI stays
+  responsive. Closing the window mid-run prompts to cancel cleanly.
+- `PyQt6>=6.6.0` added to `requirements.txt`.
+
 ### Added — Application Settings Management
 
 - **`scripts/settings.py`** — New user-settings module backed by a JSON file
