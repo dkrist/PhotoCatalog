@@ -17,6 +17,8 @@ Use [GitHub Issues](https://github.com/dkrist/PhotoCatalog/issues) for detailed 
 ### Phase 2 — Usability Improvements
 - **GUI folder picker** — tkinter dialog when no folder argument is passed
 - **Excel date formatting** — DateTimeOriginal, DateTimeDigitized, and DateTimeModified stored as proper Excel dates (sortable/filterable)
+- **Application settings (`settings.py`)** — JSON-based user config at `%APPDATA%\PhotoCatalog\config.json` with `save_report_to`, `log_file_folder`, `default_scan_folder`, `enable_face_recognition`, `log_level`, and recent folders
+- **File logging** — timestamped log files written to the configured `log_file_folder`
 
 ---
 

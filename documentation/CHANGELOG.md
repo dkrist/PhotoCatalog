@@ -4,6 +4,37 @@ All notable changes to the Photo Catalog App project are documented in this file
 
 ---
 
+## [Unreleased] — 2026-04-13
+
+### Added — Application Settings Management
+
+- **`scripts/settings.py`** — New user-settings module backed by a JSON file
+  at `%APPDATA%\PhotoCatalog\config.json` (cross-platform via `platformdirs`
+  when available, with `%APPDATA%` / `~/.config` fallbacks).
+- **Settings supported:**
+  - `save_report_to` — folder where generated Excel reports are written
+    (default: `~/Documents/PhotoCatalog/Reports`).
+  - `log_file_folder` — folder where application log files are written
+    (default: `~/Documents/PhotoCatalog/Logs`).
+  - `default_scan_folder` — last-used photo folder, used to seed the GUI picker.
+  - `enable_face_recognition` — default toggle (overridden by `--no-faces`).
+  - `log_level` — logging verbosity (`DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL`).
+  - `recent_folders` — last 10 scanned folders.
+- **File logging** added to `run_catalog.py` — every run now writes a
+  timestamped log file to `log_file_folder` in addition to console output.
+- **`--show-settings` flag** added to `run_catalog.py` for printing the
+  current config file path and values.
+- **`platformdirs`** added to `requirements.txt`.
+
+### Changed
+
+- `run_catalog.py` now resolves the report output folder from
+  `save_report_to` instead of the hardcoded `output/` path.
+- GUI folder picker now seeds its initial directory from the user's last
+  scanned folder.
+
+---
+
 ## [0.1.0] — 2026-03-03
 
 ### Initial Release — Core MVP
