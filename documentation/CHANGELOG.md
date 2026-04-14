@@ -4,7 +4,7 @@ All notable changes to the Photo Catalog App project are documented in this file
 
 ---
 
-## [Unreleased] — 2026-04-13
+## [2.0.0] — 2026-04-13
 
 ### Added — Windows Installer / Distribution
 
