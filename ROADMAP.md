@@ -20,6 +20,7 @@ Use [GitHub Issues](https://github.com/dkrist/PhotoCatalog/issues) for detailed 
 - **Application settings (`settings.py`)** — JSON-based user config at `%APPDATA%\PhotoCatalog\config.json` with `save_report_to`, `log_file_folder`, `default_scan_folder`, `enable_face_recognition`, `log_level`, and recent folders
 - **File logging** — timestamped log files written to the configured `log_file_folder`
 - **Desktop UI (PyQt6)** — `gui_main.py` with folder pickers, progress bar, live log tail, and Open Report / Open Log buttons. Pipeline logic lives in `catalog_pipeline.py` and is shared with the CLI.
+- **Windows installer / distribution** — PyInstaller `--onedir` build wrapped in an Inno Setup installer, orchestrated by `packaging\build.ps1`. Produces `release\PhotoCatalog-Setup-<version>.exe` ready for GitHub Releases. See `documentation/RELEASING.md` for the full workflow.
 
 ---
 

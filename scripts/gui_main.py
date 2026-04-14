@@ -73,7 +73,25 @@ from settings import get_settings
 APP_TITLE = "The Photo Catalog Project"
 APP_VERSION = "V2"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-IMAGES_DIR = PROJECT_ROOT / "Images"
+
+
+def _resource_root() -> Path:
+    """Return the folder that contains the bundled ``Images/`` directory.
+
+    In development mode this is the project root (``gui_main.py``'s
+    grandparent). When frozen by PyInstaller ``sys._MEIPASS`` points at
+    the ``_internal`` directory where data files from the ``.spec`` file
+    are unpacked, so the same ``Images/`` subpath resolves correctly in
+    both cases.
+    """
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            return Path(meipass)
+    return PROJECT_ROOT
+
+
+IMAGES_DIR = _resource_root() / "Images"
 CAMERA_ICON = IMAGES_DIR / "camera-icon-52.png"
 CLAUDE_ICON = IMAGES_DIR / "250px-Claude_AI_symbol.svg.png"
 
@@ -264,13 +282,15 @@ class MainWindow(QMainWindow):
         )
         built_layout.addWidget(built_label)
 
+        # Size the Claude mark closer to the 52px camera icon on the left
+        # so the two header marks read as visually balanced.
         claude_icon = QLabel()
-        claude_icon.setFixedSize(32, 32)
+        claude_icon.setFixedSize(44, 44)
         claude_icon.setStyleSheet("background: transparent; border: none;")
         if CLAUDE_ICON.exists():
             claude_icon.setPixmap(
                 QPixmap(str(CLAUDE_ICON)).scaled(
-                    32, 32,
+                    44, 44,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
@@ -338,7 +358,9 @@ class MainWindow(QMainWindow):
         )
         row.addWidget(self.progress_bar, 1)
 
-        self.progress_counter = QLabel("0/0")
+        # Idle text shown before the first run; replaced with "current/total"
+        # by _on_progress as soon as the worker emits its first update.
+        self.progress_counter = QLabel("Ready")
         self.progress_counter.setStyleSheet("color: #2f5b9a; font-weight: bold;")
         self.progress_counter.setMinimumWidth(140)
         self.progress_counter.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -438,7 +460,7 @@ class MainWindow(QMainWindow):
         # Reset progress UI and disable Start to prevent double-runs.
         self.log_view.clear()
         self.progress_bar.setValue(0)
-        self.progress_counter.setText("0/0")
+        self.progress_counter.setText("Scanning…")
         self.start_button.setEnabled(False)
         self.open_report_button.setEnabled(False)
         self._append_log(f"Starting catalog of: {photo_folder}")

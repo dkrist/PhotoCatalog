@@ -6,6 +6,30 @@ All notable changes to the Photo Catalog App project are documented in this file
 
 ## [Unreleased] — 2026-04-13
 
+### Added — Windows Installer / Distribution
+
+- **`packaging/PhotoCatalog.spec`** — PyInstaller `--onedir` recipe that
+  bundles the PyQt6 GUI, `Images/` folder, and app icon. Trims ~40–60 MB
+  of unused Qt modules (Qt3D, WebEngine, Multimedia, etc.) via `excludes`.
+- **`packaging/PhotoCatalog.iss`** — Inno Setup 6 script that wraps the
+  PyInstaller output into a single-file setup installer. Installs into
+  `Program Files\PhotoCatalog`, creates a Start Menu shortcut, and
+  offers an optional desktop icon. Stable `AppId` GUID so upgrades
+  replace the existing install cleanly.
+- **`packaging/build.ps1`** — one-shot PowerShell orchestration script
+  that runs PyInstaller then Inno Setup. Supports `-Clean` (nuke
+  `build\`, `dist\`, `release\` first) and `-SkipInstaller` (for fast
+  iteration without re-packaging).
+- **`documentation/RELEASING.md`** — end-to-end release guide covering
+  toolchain setup, build command, smoke-test checklist, version
+  bumping, GitHub Releases publishing, the Windows SmartScreen warning
+  explanation, and a troubleshooting section.
+- **`Images/photocatalog.ico`** — multi-resolution app icon
+  (16/24/32/48/64/128/256 px) used by both the PyInstaller `.exe` and
+  the Inno Setup installer.
+- Final artifact: `release\PhotoCatalog-Setup-<version>.exe`, ready to
+  attach to a GitHub Release.
+
 ### Added — Desktop UI (PyQt6)
 
 - **`scripts/gui_main.py`** — new PyQt6 desktop UI matching the project
