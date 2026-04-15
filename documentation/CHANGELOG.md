@@ -4,6 +4,147 @@ All notable changes to the Photo Catalog App project are documented in this file
 
 ---
 
+## [3.0.0] — 2026-04-15
+
+### Headline — reorganize a messy photo drive into a clean destination
+
+v3 extends PhotoCatalog from "scan and rename in place" to "scan,
+detect duplicates, and copy into a date-organized destination." The
+full rationale and decision log lives in
+`documentation/v3_design_notes.md`; the implementation below mirrors
+that document.
+
+### Added — Destination folder + checkbox-driven folder layout
+
+- **New required Destination Folder picker** on the main window, sits
+  between *Save Report to Folder* and the action buttons.
+- **Folder Layout checkboxes** replace what would otherwise have been
+  a second free-text template. Three nested level pickers — *Year*,
+  *Month*, *Day* — each with a format radio group (e.g. `YYYY`,
+  `MM - MonthName`, `YYYY-MM-DD`). The app composes the path in
+  Year → Month → Day order and renders a live **Destination preview**
+  label so the user can see exactly what path one of their photos will
+  land at.
+- **`File_DestFolder`** and **`File_DestPath`** columns added to the
+  Catalog sheet. `File_DestFolder` is the rendered path under the
+  destination root; `File_DestPath` is the full copy target including
+  the rename filename.
+- Files whose date sources (`DateTimeOriginal` and `File_Date`) are
+  both missing land in a literal `Unknown_Date` folder with a
+  `[WARN]` entry in `File_Concern`.
+
+### Added — Duplicate detection
+
+- **New Dupe Detection mode combo box** on the main window with three
+  choices: *None*, *Filename + Size* (match on lowercased basename +
+  `File_SizeBytes`), and *MD5 Hash* (full-bytes match, slower).
+  Selecting Hash prompts the user to confirm the longer run time.
+- **`File_Hash` column** (MD5 hex string, 32 chars). Populated only when
+  Hash mode is selected; blank otherwise.
+- **`File_DupeGroup`** (integer) groups duplicates together so the
+  Excel user can sort/filter by group. **`File_DupeKeep`** (`TRUE` /
+  `FALSE`) marks exactly one row per group as the keeper (earliest
+  `File_Date` wins; ties broken by shortest source path).
+- **Distinct pale-orange highlight** (`FFFFD59B`) on the `File_Name`
+  cell when a row belongs to any duplicate group, so duplicates read
+  at a glance without needing to sort the workbook.
+- The user may edit `File_DupeKeep` before running Move or Delete;
+  the downstream engines respect the workbook's current values.
+
+### Added — Copy engine with sidecar handling
+
+- **New *Copy to Destination* button** runs a background pass that
+  reads `File_DestPath` for every row and copies the source file into
+  place. `File_Status` transitions from blank to `Copied` on success.
+- **Sidecar files follow the primary.** When copying `IMG_0001.NEF`,
+  any same-stem companions in the same source folder
+  (`IMG_0001.JPG`, `IMG_0001.xmp`, `IMG_0001.aae`, `IMG_0001.thm`,
+  `IMG_0001.dop`) are copied to the same destination folder under the
+  same stem, so edit histories and raw+jpg pairs stay intact.
+- **Automatic destination collision suffixing.** If a file already
+  exists at the target path, the copy writes to `..._2`, `..._3`, etc.,
+  and appends a `[WARN]` entry in `File_Concern` noting the renamed
+  destination path.
+
+### Added — Rollback journal and Undo
+
+- Every destructive-ish operation (Copy, Move-non-keepers,
+  Delete-non-keepers) writes a **`_rollback_<YYYYMMDD_HHMMSS>.jsonl`**
+  file in the destination folder, one line per file touched.
+- **New *Undo Last Operation* button** reads the newest journal in
+  reverse and reverses each entry — deletes copied files, moves files
+  back, etc. Unrecoverable entries (e.g. a deleted source whose
+  backup doesn't exist) are listed in the log so the user can recover
+  manually from backup.
+
+### Added — Non-keeper disposal
+
+- **Move non-keepers...** button moves rows where `File_DupeKeep =
+  FALSE` from their source location to a user-chosen holding folder,
+  preserving their relative path so the user can review and discard at
+  leisure.
+- **Delete non-keepers from source** button deletes rows where
+  `File_DupeKeep = FALSE` from the source drive, with a strong
+  two-step confirmation and a complete rollback journal.
+- Both operations update `File_Status` to `DupeMoved` or
+  `DupeDeleted`.
+
+### Added — Empty source folder cleanup
+
+- After a Move or Delete non-keepers pass, a final pass walks the
+  source tree and lists any folders that are now empty in
+  `_source_cleanup_candidates.log`. A confirmation dialog ("Remove N
+  now-empty source folders?") gates the actual removal, and the
+  removals are added to the rollback journal.
+
+### Added — MD5 hash column (opt-in)
+
+- **`File_Hash`** — 32-character lowercase MD5 hex string. Computed
+  per file with a streaming 1 MB-buffer read so large RAW files don't
+  balloon memory. Populated only when the Hash dupe mode is selected
+  for the run. A non-cryptographic algorithm is deliberately chosen:
+  this is for "are these the same bytes," not for signing.
+
+### Added — Full UI-state persistence
+
+- `settings.py` gains v3 keys so the entire main window state round-trips
+  through a restart: `destination_folder`, `rename_template`,
+  `folder_level_year` / `folder_format_year` (and matching month/day),
+  `dupe_mode`, and `operation_default`. Opening the app tomorrow fills
+  every field with yesterday's values.
+- Settings still live at `%APPDATA%\PhotoCatalog\settings.json` on
+  Windows (same file v2.x used); unknown future keys survive a
+  save-load round-trip.
+
+### Changed — Column order
+
+- New `File_` columns insert into COLUMN_ORDER between `File_Date`
+  and `File_Concern` so the expanded `File_` block still groups at
+  the left edge of the sheet:
+
+  `File_Name`, `File_Extension`, `File_RenameName`, `File_Size`,
+  `File_SizeBytes`, `File_Date`, `File_Hash`, `File_DupeGroup`,
+  `File_DupeKeep`, `File_DestFolder`, `File_DestPath`,
+  `File_Status`, `File_Concern`, `File_Path`.
+
+### Changed — Pipeline orchestration
+
+- `catalog_pipeline.run_catalog` now accepts `dupe_mode`,
+  `folder_config`, and `destination_folder` parameters and attaches
+  them to the catalog run. Callers that omit these fall back to v2.1.x
+  behavior (dupe detection off, no destination composition, rename
+  in-place only).
+
+### Engineering notes
+
+- New modules: `duplicate_detector.py`, `folder_composer.py`,
+  `copy_engine.py`, `rollback.py`.
+- v2.1.x workbooks remain readable; new columns are appended on the
+  right when they're missing on load, matching the pattern introduced
+  in v2.1.1's `_ensure_column`.
+
+---
+
 ## [2.1.1] — 2026-04-14
 
 ### Added — Template viability check (CR #2)

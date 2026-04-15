@@ -53,11 +53,51 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
 
     # Recently scanned folders, most recent first (capped at 10).
     "recent_folders": [],
+
+    # --- v3 additions ----------------------------------------------------
+    # Destination root for the Copy pass (v3's reorganize-into-new-folder
+    # workflow). Empty = not yet chosen.
+    "destination_folder": "",
+
+    # Last-used rename filename template (free-form %Variable% string).
+    "rename_template": "",
+
+    # Folder layout checkboxes + format radios (v3). Each level has an
+    # enable flag plus the format choice that will be used when enabled.
+    # Valid format strings are validated by folder_composer.
+    "folder_level_year":   True,
+    "folder_format_year":  "YYYY",              # {YY, YYYY}
+    "folder_level_month":  True,
+    "folder_format_month": "MM - MonthName",    # {MM, MM - MonthName, MonthName}
+    "folder_level_day":    False,
+    "folder_format_day":   "DD",                # {DD, YYYY-MM-DD}
+
+    # Duplicate detection mode. One of: none, filename_size, hash.
+    "dupe_mode": "none",
+
+    # When True, MD5 mode hashes every file regardless of whether its
+    # size collides with another row. When False (default), the
+    # smart-hash optimization only hashes files whose File_SizeBytes
+    # collides with at least one other row — typically 80–95% I/O
+    # savings on a real photo library. See README "Smart Hash Strategy".
+    "always_hash_all_files": False,
+
+    # Default operation when Start Cataloging kicks off a v3 run.
+    # One of: copy, preview. (Move/Delete are always explicit buttons.)
+    "operation_default": "copy",
 }
 
 # Allowed values for enumerated settings (used by validation).
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 _MAX_RECENT_FOLDERS = 10
+
+# v3 enumerated settings — mirrored here so validation is colocated with
+# the rest of the _validate rules.
+_VALID_DUPE_MODES = {"none", "filename_size", "hash"}
+_VALID_OPERATIONS = {"copy", "preview"}
+_VALID_YEAR_FORMATS = {"YY", "YYYY"}
+_VALID_MONTH_FORMATS = {"MM", "MM - MonthName", "MonthName"}
+_VALID_DAY_FORMATS = {"DD", "YYYY-MM-DD"}
 
 
 def _get_config_dir() -> Path:
@@ -143,7 +183,10 @@ class Settings:
         Return the value for `key`, expanding paths for folder settings.
         Falls back to DEFAULT_SETTINGS, then to `default`.
         """
-        if key in ("save_report_to", "log_file_folder", "default_scan_folder"):
+        if key in (
+            "save_report_to", "log_file_folder",
+            "default_scan_folder", "destination_folder",
+        ):
             raw = self._values.get(key, DEFAULT_SETTINGS.get(key, default))
             return _expand_path(raw) if raw else raw
         return self._values.get(key, DEFAULT_SETTINGS.get(key, default))
@@ -183,7 +226,11 @@ class Settings:
         if key not in DEFAULT_SETTINGS:
             raise KeyError(f"Unknown setting: {key!r}")
 
-        if key in ("save_report_to", "log_file_folder", "default_scan_folder"):
+        if key in (
+            "save_report_to", "log_file_folder",
+            "default_scan_folder", "destination_folder",
+            "rename_template",
+        ):
             if not isinstance(value, str):
                 raise ValueError(f"{key} must be a string path")
 
@@ -200,6 +247,39 @@ class Settings:
         elif key == "recent_folders":
             if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
                 raise ValueError(f"{key} must be a list of strings")
+
+        # --- v3 validation -------------------------------------------------
+        elif key in ("folder_level_year", "folder_level_month", "folder_level_day"):
+            if not isinstance(value, bool):
+                raise ValueError(f"{key} must be a bool")
+        elif key == "folder_format_year":
+            if value not in _VALID_YEAR_FORMATS:
+                raise ValueError(
+                    f"{key} must be one of {sorted(_VALID_YEAR_FORMATS)}"
+                )
+        elif key == "folder_format_month":
+            if value not in _VALID_MONTH_FORMATS:
+                raise ValueError(
+                    f"{key} must be one of {sorted(_VALID_MONTH_FORMATS)}"
+                )
+        elif key == "folder_format_day":
+            if value not in _VALID_DAY_FORMATS:
+                raise ValueError(
+                    f"{key} must be one of {sorted(_VALID_DAY_FORMATS)}"
+                )
+        elif key == "dupe_mode":
+            if value not in _VALID_DUPE_MODES:
+                raise ValueError(
+                    f"{key} must be one of {sorted(_VALID_DUPE_MODES)}"
+                )
+        elif key == "always_hash_all_files":
+            if not isinstance(value, bool):
+                raise ValueError(f"{key} must be a bool")
+        elif key == "operation_default":
+            if value not in _VALID_OPERATIONS:
+                raise ValueError(
+                    f"{key} must be one of {sorted(_VALID_OPERATIONS)}"
+                )
 
 
 # ---------------------------------------------------------------------------

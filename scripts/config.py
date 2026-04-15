@@ -39,8 +39,21 @@ COLUMN_ORDER = [
     # File info (all app-generated / filesystem-sourced columns use
     # the File_ prefix so they group together on the left side of the
     # workbook and visually separate from EXIF/XMP camera metadata).
+    #
+    # v3 additions (File_Hash through File_Status) slot between
+    # File_Date and File_Concern so the expanded File_ block still
+    # groups at the left edge of the sheet. Order within the v3 block:
+    #   File_Hash        — MD5 of the bytes (populated only in Hash dupe mode)
+    #   File_DupeGroup   — integer group ID assigned by duplicate_detector
+    #   File_DupeKeep    — TRUE/FALSE keeper flag (user-editable)
+    #   File_DestFolder  — composed destination subfolder (relative)
+    #   File_DestPath    — full destination path for the Copy pass
+    #   File_Status      — pending / copied / skipped / dupe_moved / dupe_deleted
     'File_Name', 'File_Extension', 'File_RenameName',
     'File_Size', 'File_SizeBytes', 'File_Date',
+    'File_Hash',
+    'File_DupeGroup', 'File_DupeKeep',
+    'File_DestFolder', 'File_DestPath', 'File_Status',
     'File_Concern', 'File_Path',
     'ImageWidth', 'ImageHeight',
 

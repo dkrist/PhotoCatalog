@@ -251,6 +251,12 @@ CONCERN_MARKERS = (CONCERN_INFO, CONCERN_WARN, CONCERN_ERROR)
 CONCERN_FILL_YELLOW = "FFFFE699"   # pale yellow for [INFO] / [WARN]
 CONCERN_FILL_RED    = "FFFFC7CE"   # pale red for [ERROR]
 
+# v3 — duplicate group highlight. Applied to the File_Name cell (not the
+# whole row) whenever File_DupeGroup is populated, so visual scanning
+# instantly surfaces duplicate clusters while leaving the rest of the
+# row readable in its normal alternating fill.
+DUPE_FILL_ORANGE    = "FFFFD59B"   # pale orange for duplicate group members
+
 
 def _sanitize_cell_value(val, concerns=None, field=None):
     """
@@ -666,6 +672,16 @@ def extract_metadata(filepath):
         'File_Size': size_str,
         'File_SizeBytes': file_size,
         'File_Date': file_date,
+        # v3 placeholders — populated by later pipeline passes. Keeping
+        # them in the row dict up front ensures the columns always exist
+        # in the workbook even for pipelines that skip hashing / dupe
+        # detection / destination composition.
+        'File_Hash': None,          # MD5, filled by duplicate_detector.populate_hashes (hash mode only)
+        'File_DupeGroup': None,     # int group id, filled by duplicate_detector.detect_duplicates
+        'File_DupeKeep': None,      # bool keeper flag (True/False/None), same
+        'File_DestFolder': None,    # relative dest subfolder, filled by copy_engine.populate_destination_columns
+        'File_DestPath': None,      # full dest path, same
+        'File_Status': None,        # pending/copied/skipped/dupe_moved/dupe_deleted, same
         # File_Concern is written as the final join of _concerns at
         # workbook-write time; placeholder here keeps the column order.
         'File_Concern': None,
@@ -689,6 +705,13 @@ def extract_metadata(filepath):
 COLUMN_ORDER = [
     'File_Name', 'File_Extension', 'File_RenameName',
     'File_Size', 'File_SizeBytes', 'File_Date',
+    # --- v3 additions: hash, duplicate grouping, destination mapping,
+    # and per-row operation status. Slotted between File_Date and
+    # File_Concern so the expanded File_ block still groups at the
+    # left edge of the sheet.
+    'File_Hash',
+    'File_DupeGroup', 'File_DupeKeep',
+    'File_DestFolder', 'File_DestPath', 'File_Status',
     'File_Concern', 'File_Path',
     'ImageWidth', 'ImageHeight',
     'CameraMake', 'CameraModel', 'HostComputer', 'Software',
@@ -783,6 +806,7 @@ def write_excel(all_rows, output_path, folder_name):
     alt_fill = PatternFill('solid', fgColor='F2F2F2')
     concern_fill_yellow = PatternFill('solid', fgColor=CONCERN_FILL_YELLOW)
     concern_fill_red = PatternFill('solid', fgColor=CONCERN_FILL_RED)
+    dupe_fill_orange = PatternFill('solid', fgColor=DUPE_FILL_ORANGE)
 
     # Find the File_Concern column index (if present) so we can skip it
     # in the main write loop and populate it once per row after all
@@ -792,6 +816,15 @@ def write_excel(all_rows, output_path, folder_name):
         concern_col_idx = columns.index('File_Concern') + 1
     except ValueError:
         concern_col_idx = None
+
+    # v3 — locate the File_Name column so we can paint the pale-orange
+    # dupe fill on exactly that cell for rows belonging to a duplicate
+    # group. File_Name is always present in v3 but we still guard with
+    # a ValueError fallback for paranoia's sake.
+    try:
+        file_name_col_idx = columns.index('File_Name') + 1
+    except ValueError:
+        file_name_col_idx = None
 
     # Write headers
     for col_idx, col_name in enumerate(columns, 1):
@@ -866,6 +899,12 @@ def write_excel(all_rows, output_path, folder_name):
                 else:
                     # [INFO] and [WARN] share the same pale yellow shade.
                     cell.fill = concern_fill_yellow
+
+        # v3 — paint the File_Name cell pale orange if this row is a
+        # member of a duplicate group. Applied AFTER the alt-fill write
+        # above so it reliably overrides the zebra striping for dupes.
+        if file_name_col_idx is not None and row_data.get('File_DupeGroup'):
+            ws.cell(row=row_idx, column=file_name_col_idx).fill = dupe_fill_orange
 
     # Auto-fit column widths
     for col_idx, col_name in enumerate(columns, 1):

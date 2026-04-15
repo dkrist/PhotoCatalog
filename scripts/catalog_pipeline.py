@@ -24,6 +24,19 @@ from photo_catalog import (
     write_excel,
 )
 
+# --- v3 modules --------------------------------------------------------------
+# These are optional phases in the pipeline; they only run when the GUI / CLI
+# passes in the matching parameters. Keeping the imports at module scope means
+# the pipeline fails loud at import time if the supporting modules disappear
+# during packaging, rather than raising mid-run on the first file.
+from duplicate_detector import (
+    detect_duplicates,
+    populate_hashes,
+    size_collision_candidates,
+)
+from folder_composer import FolderConfig
+from copy_engine import populate_destination_columns
+
 
 # Typed aliases for clarity on the callback signatures.
 ProgressCallback = Callable[[int, int, str], None]   # (current, total, message)
@@ -183,6 +196,11 @@ def run_catalog(
     log_callback: Optional[LogCallback] = None,
     cancel_event: Optional[threading.Event] = None,
     output_path: Optional[str] = None,
+    dupe_mode: str = "none",
+    folder_config: Optional[FolderConfig] = None,
+    destination_folder: Optional[str] = None,
+    rename_template: str = "",
+    always_hash_all_files: bool = False,
 ) -> Tuple[str, int, int]:
     """
     Run the full PhotoCatalog pipeline end-to-end.
@@ -199,6 +217,28 @@ def run_catalog(
                           in `output_dir` is used. Callers (e.g. the GUI)
                           can pass a versioned path like `..._2.xlsx` when
                           the default one is locked.
+        dupe_mode:        v3 duplicate detection mode. One of
+                          ``"none"``, ``"filename_size"``, ``"hash"``.
+                          ``"hash"`` triggers an extra MD5 pass over every
+                          file before detection runs.
+        folder_config:    v3 :class:`folder_composer.FolderConfig` describing
+                          the destination folder layout. If supplied together
+                          with *destination_folder*, the pipeline populates
+                          the File_DestFolder / File_DestPath / File_Status
+                          columns so the workbook is immediately usable as
+                          input to the Copy pass.
+        destination_folder: v3 destination root for the Copy pass.
+                          Only used when *folder_config* is also provided.
+        rename_template:  v3 rename filename template (free-form
+                          ``%Variable%`` string). Empty string means "keep
+                          original filename".
+        always_hash_all_files: If ``True`` and ``dupe_mode == "hash"``,
+                          compute MD5 for every file regardless of
+                          whether its size collides with another. The
+                          default ``False`` enables the smart-hash
+                          optimization that skips size-unique rows
+                          (typically 80–95% of a real library) since
+                          they cannot have a byte-identical twin.
 
     Returns:
         (output_path, num_rows, num_cols) on success.
@@ -274,6 +314,84 @@ def run_catalog(
             log(f"  Face recognition failed: {e}")
     else:
         log("--- Phase 2: Face recognition skipped ---")
+
+    # --- v3 Phase 2b: MD5 hashing (only when dupe_mode == "hash") --------
+    # Hashing is the slowest optional step — a full RAW drive can take
+    # many minutes — so it's gated behind the dupe-mode selector. The
+    # filename+size mode doesn't need hashes at all, and the "none" mode
+    # obviously skips this phase too.
+    if dupe_mode == "hash":
+        _check_cancel(cancel_event)
+        log("--- Phase 2b: Hashing files (MD5) ---")
+
+        # Smart-hash optimization: only hash files whose size collides
+        # with another row's size. Two byte-identical files MUST share
+        # a size, so size-unique files cannot have a duplicate twin and
+        # are guaranteed safe to skip. Caller can opt out via
+        # always_hash_all_files=True for a fully populated File_Hash
+        # column. See README "Smart Hash Strategy" for the math.
+        if always_hash_all_files:
+            log("  Smart-hash optimization disabled — full sweep over all files.")
+            candidate_set = None
+        else:
+            candidate_set = size_collision_candidates(all_rows)
+            total_rows = len(all_rows)
+            planned = len(candidate_set)
+            skipped = total_rows - planned
+            pct = (100.0 * skipped / total_rows) if total_rows else 0
+            log(
+                f"  Smart-hash optimization: hashing {planned:,} of "
+                f"{total_rows:,} files ({skipped:,} unique-size rows "
+                f"skipped, {pct:.1f}% I/O saved)."
+            )
+
+        def _hash_progress(current: int, total_: int) -> None:
+            _check_cancel(cancel_event)
+            progress(current, total_, "hashing")
+            if current == 1 or current % 100 == 0 or current == total_:
+                log(f"  Hashed {current}/{total_}")
+
+        hashed = populate_hashes(
+            all_rows,
+            progress_callback=_hash_progress,
+            cancel_event=cancel_event,
+            candidate_paths=candidate_set,
+        )
+        log(f"  Hashed {hashed} file(s)")
+
+    # --- v3 Phase 2c: Duplicate detection --------------------------------
+    if dupe_mode and dupe_mode != "none":
+        _check_cancel(cancel_event)
+        log(f"--- Phase 2c: Duplicate detection ({dupe_mode}) ---")
+        dupe_summary = detect_duplicates(all_rows, mode=dupe_mode)
+        log(
+            f"  {dupe_summary['groups']} group(s), "
+            f"{dupe_summary['duplicate_rows']} row(s) in groups, "
+            f"{dupe_summary['keepers']} keeper(s), "
+            f"{dupe_summary['non_keepers']} non-keeper(s), "
+            f"{dupe_summary['skipped']} skipped (no match key)."
+        )
+
+    # --- v3 Phase 2d: Destination-column composition ---------------------
+    # Populates File_RenameName / File_DestFolder / File_DestPath /
+    # File_Status from the folder_config + rename_template. This means
+    # the workbook that lands on disk already has everything the Copy
+    # button needs — no second pass required to pre-render destinations.
+    if folder_config is not None and destination_folder:
+        _check_cancel(cancel_event)
+        log("--- Phase 2d: Composing destination paths ---")
+        dest_summary = populate_destination_columns(
+            all_rows,
+            destination_root=destination_folder,
+            folder_config=folder_config,
+            rename_template=rename_template,
+        )
+        log(
+            f"  {dest_summary['resolved']} resolved, "
+            f"{dest_summary['unknown_date']} to Unknown_Date, "
+            f"{dest_summary['rename_fallback']} rename fallbacks, "
+            f"{dest_summary['dupe_fallback_date']} File_Date fallbacks."
+        )
 
     # --- Phase 3: Excel --------------------------------------------------
     _check_cancel(cancel_event)
