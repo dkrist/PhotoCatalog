@@ -4,6 +4,227 @@ All notable changes to the Photo Catalog App project are documented in this file
 
 ---
 
+## [2.1.1] — 2026-04-14
+
+### Added — Template viability check (CR #2)
+
+- **Pre-flight validation on the rename template itself.** Both *Test
+  Rename String* and *Build Renames for all Photos* now run a
+  pattern-based check on the template before any rendering starts so
+  the user doesn't discover the template was broken only after watching
+  thousands of rows render into garbage.
+- **Errors (block execution):**
+  - Template does not produce a file extension (no `%File_Extension%`
+    token and doesn't end with a literal extension like `.jpg`,
+    `.heic`, `.cr2`, etc.).
+  - Template has no `%Variable%` tokens at all, which would rename
+    every photo to the same literal string.
+  - Template is empty or whitespace-only.
+  - Template contains unknown tokens (previously surfaced inconsistently
+    between Test and Build — now rolled into the unified check).
+- **Warnings (confirm to proceed):**
+  - Template does not include `%File_Name%`. Photos taken on the same
+    date by the same camera would collide en masse. Still valid if
+    intentional; the per-row preflight will still flag the actual
+    collisions with `[ERROR]` markers in `File_Concern`.
+  - Template contains path separators (`/` or `\\`). The rename engine
+    does not create subfolders; separators are stripped from the
+    rendered filename.
+- **UI flow:** when the template has errors, a single
+  `QMessageBox.critical` lists every error *and every warning* in one
+  pass (plus the valid-variable cheat sheet) so the user addresses
+  everything in one fix-test cycle instead of discovering problems one
+  at a time. Warning-only templates show a `QMessageBox.question` with
+  "Proceed anyway / Cancel." Clean templates run exactly as before.
+- **Engine-level safety net.** `check_template_viability()` is also
+  called inside `build_renames()` and `test_template()` themselves, so
+  any future caller that bypasses the GUI still gets the same
+  protection — errors raise `ValueError`, warnings stream to the log.
+- New module entry point: `rename_engine.check_template_viability`.
+
+### Changed — Column naming & grouping (CR #1)
+
+- **`File_` prefix applied to all app-generated / filesystem-sourced columns.**
+  `FileName`, `FileExtension`, `RenameFileName`, `FilePath`, `FileSize`,
+  and `FileSizeBytes` became `File_Name`, `File_Extension`,
+  `File_RenameName`, `File_Path`, `File_Size`, and `File_SizeBytes`
+  respectively. The prefix visually separates catalog-owned columns
+  from EXIF/XMP camera-sourced fields and aligns the column names with
+  the existing underscored rename-variable style (`%File_Name%`,
+  `%File_Extension%`, `%Camera_Make%`). All `File_` columns now group
+  together on the left edge of the Catalog sheet.
+
+### Added — `File_Date` column (CR #1)
+
+- **New `File_Date` column** captures the filesystem Modified timestamp
+  (`os.stat().st_mtime`) for every cataloged image, positioned inside
+  the `File_` group. Stored as a proper Excel datetime so it sorts and
+  filters alongside `DateTimeOriginal`.
+- **Rename-engine date fallback.** The `%Date_YY%` / `%Date_YYYY%` /
+  `%Date_MM%` / `%Date_DD%` variables now fall back to `File_Date`
+  when `DateTimeOriginal` is blank. Rows are skipped only when *both*
+  dates are missing. Each fallback row gets an `[INFO]` marker in
+  `File_Concern`. Catalogs of scanned documents, Lightroom exports,
+  and copied-off-camera files that previously rendered blank names
+  now produce usable renames.
+
+### Added — `File_Concern` column with severity tiers (CR #1)
+
+- **New `File_Concern` column** (positioned just before `File_Path`)
+  promotes previously-silent issues to first-class data:
+  - `[INFO]` — benign notices such as fallback-date usage.
+  - `[WARN]` — correctable conditions such as sanitized illegal EXIF
+    characters or `ZeroDivisionError` skips on rational fields.
+  - `[ERROR]` — conditions that block the future on-disk rename/move:
+    rename collisions within the same target folder, renders exceeding
+    Windows' 255-character filename limit, empty renders, and
+    `os.stat()` failures on unreadable files.
+- **Color-coded cells.** `File_Concern` cells are filled pale yellow
+  (`FFFFE699`) when only `[INFO]` / `[WARN]` markers are present and
+  pale red (`FFFFC7CE`) when any `[ERROR]` marker is present; color is
+  driven by the highest severity, and multiple messages within a row
+  are joined with `; `.
+- **End-of-run log summary.** The Process Log now reports one line per
+  run summarizing the marker tally, e.g.
+  `File_Concern markers: [INFO] 142, [WARN] 17, [ERROR] 3 across 159 row(s)`,
+  so the user sees the gist without scrolling the workbook.
+
+### Added — Rename preflight validation (CR #1)
+
+- **Build Renames now validates before writing.** The rename pass
+  runs in two stages: render all rows, then check every rendered name
+  for emptiness, over-length, and collisions within the same parent
+  folder. Failing rows get `[ERROR]` concerns appended and
+  `File_RenameName` left blank so the future on-disk move pass skips
+  them cleanly. Passing rows write the rendered name as before.
+- **Rename-run log summary** extended with counts for
+  `File_Date` fallbacks and `[ERROR]` rows, in addition to the existing
+  renamed / skipped totals.
+- **Concern preservation.** Appending rename-time concerns to an
+  existing `File_Concern` cell no longer stomps the extract-time
+  concerns written during the catalog phase. Duplicate messages are
+  suppressed so repeated Build Renames passes don't accumulate noise.
+- **Backward compatibility.** `test_template` and `build_renames`
+  transparently read workbooks written by v2.1.0 (which use the old
+  un-prefixed header names) so earlier catalogs can be re-renamed
+  without re-scanning.
+
+---
+
+## [2.1.0] — 2026-04-14
+
+### Fixed
+
+- **`IllegalCharacterError` on quirky camera EXIF padding.** Some older
+  cameras (e.g. Canon PowerShot SD1000) store the `Model` tag as
+  `"Canon PowerShot SD1000"` followed by NUL byte padding. openpyxl
+  refuses to write strings containing ASCII control characters and
+  raises `IllegalCharacterError` during `wb.save()`, which aborts the
+  whole workbook write at the very end of a long run. Added
+  `_sanitize_cell_value()` that strips characters in the
+  `\x00-\x08 / \x0b-\x0c / \x0e-\x1f` ranges from any string before it
+  reaches an Excel cell. Non-string values (datetimes, ints, floats)
+  pass through untouched so date-formatting still works.
+- **`ZeroDivisionError` on scanner-produced JPEGs.** Scanned documents
+  (passports, receipts, flatbed scans) often have partial EXIF with
+  `ExposureTime = 0` or rational fields whose denominator is `0`, which
+  crashed `format_exposure_time()` and every `float(value)` call on
+  Pillow `IFDRational` objects — aborting the whole run mid-catalog.
+  Added a `_safe_float()` helper that swallows `ZeroDivisionError` (in
+  addition to `TypeError`/`ValueError`) and routed all numeric EXIF
+  extraction (`FNumber`, `ISO`, `ShutterSpeedValue`, `ApertureValue`,
+  `BrightnessValue`, `ExposureBiasValue`, `FocalLength`,
+  `FocalLengthIn35mmFilm`, `XResolution`, `YResolution`) through it.
+  Also caught `ZeroDivisionError` in `format_exposure_time`,
+  `format_lens_spec`, and the GPS altitude/speed/direction parsers.
+  Malformed fields now leave the column blank for that one file
+  instead of failing the catalog.
+- **Whole-drive / multi-subfolder scans now work.** `scan_folder()` was
+  using `os.listdir()` and only ever returned files in the top level of
+  the selected folder, so pointing it at a drive root or any
+  folder-of-folders produced *"No supported image files found."* It now
+  uses `os.walk()` and recurses through every subfolder. Windows system
+  folders (`$RECYCLE.BIN`, `System Volume Information`), hidden/dot
+  folders, and common dev folders (`.git`, `__pycache__`, `node_modules`,
+  `venv`) are pruned from the walk to keep counts meaningful.
+
+### Added
+
+- **`FileExtension` column.** New column sits immediately right of
+  `FileName` in the Catalog sheet, populated with the lowercase
+  extension-with-dot (e.g. `.jpg`, `.heic`, `.cr2`). Normalization means
+  mixed-case on-disk names (`IMG_6596.JPG` vs `img_6596.jpg`) collapse
+  to a single value so sorting, filtering, and pivot-by-type all work
+  cleanly.
+
+- **`RenameFileName` column + rename template engine.** New column sits
+  immediately right of `FileExtension` in the Catalog sheet (blank at
+  catalog time) and is populated by the new rename tooling in the GUI:
+  - **Rename File Name Template** text box (below the Open Report /
+    Open Log row) accepts a template string using `%Variable%` tokens.
+    Valid tokens: `%File_Name%`, `%File_Extension%`, `%Date_YY%`,
+    `%Date_YYYY%`, `%Date_MM%`, `%Date_DD%`, `%Camera_Make%`.
+  - **Test Rename String** button validates the template and previews
+    the first 10 rendered filenames from the current catalog workbook
+    in the Process Log panel. Rows that can't render (e.g. missing
+    `DateTimeOriginal`) are shown with a reason so the user can adjust
+    the template before the full build.
+  - **Build Renames for all Photos** button runs the template across
+    every row in the workbook on a background thread, writes the
+    rendered string into the `RenameFileName` cell, and saves the
+    workbook in place. Rows with missing required data are left blank
+    with a warning summarized in the log by reason.
+  - Both rename buttons only activate once a catalog workbook exists
+    on disk and a non-empty template is in the text box. They stay
+    disabled during any running catalog / pre-scan / rename job.
+  - Substituted values are stripped of path separators and Windows-
+    illegal filename characters so the rendered string is always a
+    valid filename.
+  - The on-disk photo files are **not** moved or renamed by this
+    feature — only the `RenameFileName` column in the workbook is
+    populated. Actual file renames / moves are a planned follow-up.
+  - New module: `scripts/rename_engine.py`
+    (`validate_template`, `render_row`, `test_template`, `build_renames`).
+
+### Added — Pre-Scan Folder
+
+- **New "Pre-Scan Folder" button** to the left of "Start Cataloging
+  Process." Pre-scan is a fast filesystem-metadata-only pass that
+  reports, before any image is opened:
+  - total folders scanned and total files encountered
+  - supported image count broken down by extension
+  - non-image files broken down by extension (so videos, PDFs, Word
+    docs, etc. that shouldn't be in the photo folder can be surfaced
+    and moved out before the real catalog runs)
+- Pre-scan results stream live into the Process Log panel and are also
+  written to the timestamped log file in the configured
+  `log_file_folder`.
+- **Two-stage button gating:** Pre-Scan Folder activates once both
+  folder inputs are populated; Start Cataloging Process activates only
+  after a successful pre-scan of the currently-selected photo folder.
+  Editing the photo folder afterward invalidates the pre-scan so the
+  user re-scans before cataloging.
+- **Indeterminate progress bar** (marquee) during pre-scan with a
+  running counter formatted as `Scanning… 8,231 files in 127 folders`,
+  since the total isn't known until the walk finishes.
+- Pre-scan runs on its own `QThread` and can be interrupted cleanly if
+  the user closes the window mid-walk.
+- **`photo_catalog.prescan_folder()`** and
+  **`catalog_pipeline.run_prescan()`** added so CLI/GUI share the same
+  pre-scan implementation with progress/log/cancel callbacks.
+
+### Changed — Simpler EXIF output
+
+- Removed seven low-signal EXIF fields from the Catalog sheet to shrink
+  the workbook and make the remaining columns easier to sort/filter:
+  `DateTimeDigitized`, `DateTimeModified`, `SubSecTimeOriginal`,
+  `SubSecTimeDigitized`, `ExposureProgram`, `ExposureMode`,
+  `MeteringMode`. Deleted the now-unused `EXIF_EXPOSURE_PROGRAMS`,
+  `EXIF_METERING_MODES`, and `EXIF_EXPOSURE_MODE` lookup tables.
+  `DateTimeOriginal` remains and is still formatted as an Excel date.
+
+---
+
 ## [2.0.0] — 2026-04-13
 
 ### Added — Windows Installer / Distribution

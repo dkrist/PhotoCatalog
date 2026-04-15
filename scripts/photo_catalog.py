@@ -40,11 +40,6 @@ from openpyxl.utils import get_column_letter
 SUPPORTED_EXTENSIONS = {'.jpg', '.jpeg', '.tif', '.tiff', '.png', '.heif', '.heic', '.webp',
                         '.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2'}
 
-EXIF_EXPOSURE_PROGRAMS = {0: 'Not defined', 1: 'Manual', 2: 'Normal program', 3: 'Aperture priority',
-                          4: 'Shutter priority', 5: 'Creative program', 6: 'Action program',
-                          7: 'Portrait mode', 8: 'Landscape mode'}
-EXIF_METERING_MODES = {0: 'Unknown', 1: 'Average', 2: 'Center-weighted', 3: 'Spot',
-                       4: 'Multi-spot', 5: 'Pattern', 6: 'Partial'}
 EXIF_FLASH_MODES = {0: 'No Flash', 1: 'Fired', 5: 'Fired, Return not detected',
                     7: 'Fired, Return detected', 8: 'On, Did not fire',
                     9: 'On, Fired', 16: 'Off, Did not fire', 24: 'Auto, Did not fire',
@@ -54,7 +49,6 @@ EXIF_ORIENTATION = {1: 'Horizontal', 2: 'Mirror horizontal', 3: 'Rotate 180',
                     6: 'Rotate 90 CW', 7: 'Mirror horizontal and rotate 90 CW', 8: 'Rotate 270 CW'}
 EXIF_SCENE_CAPTURE = {0: 'Standard', 1: 'Landscape', 2: 'Portrait', 3: 'Night scene'}
 EXIF_WHITE_BALANCE = {0: 'Auto', 1: 'Manual'}
-EXIF_EXPOSURE_MODE = {0: 'Auto', 1: 'Manual', 2: 'Auto bracket'}
 EXIF_SENSING_METHOD = {1: 'Not defined', 2: 'One-chip color area', 3: 'Two-chip color area',
                        4: 'Three-chip color area', 5: 'Color sequential area',
                        7: 'Trilinear', 8: 'Color sequential linear'}
@@ -68,7 +62,7 @@ EXIF_COLOR_SPACE = {1: 'sRGB', 65535: 'Uncalibrated'}
 # (e.g., "2024:01:15 14:30:00") into Python datetime objects so they
 # can be stored as proper Excel dates (sortable, filterable) rather
 # than plain text strings.
-DATE_COLUMNS = {'DateTimeOriginal', 'DateTimeDigitized', 'DateTimeModified'}
+DATE_COLUMNS = {'DateTimeOriginal', 'File_Date'}
 
 # EXIF date formats to try when parsing
 EXIF_DATE_FORMATS = [
@@ -92,26 +86,125 @@ def parse_exif_date(value):
             continue
     return value
 
+# Windows + hidden folders that we never want to recurse into.
+# Drive-root scans (C:\, J:\) typically hit $RECYCLE.BIN and System Volume
+# Information which throw PermissionError if we try to read them.
+SKIP_DIR_NAMES = {
+    "$RECYCLE.BIN", "System Volume Information",
+    ".git", "__pycache__", ".venv", "venv", "node_modules",
+}
+
+
+def _should_skip_dir(name):
+    """Return True if this directory name should be pruned from the walk."""
+    if name in SKIP_DIR_NAMES:
+        return True
+    # Hidden folders on both Unix (.name) and Mac/Win convention
+    if name.startswith("."):
+        return True
+    return False
+
+
 def scan_folder(folder_path):
     """
-    Recursively scan a folder for supported image files.
+    Recursively scan a folder tree for supported image files.
 
-    Walks the directory tree and collects all files whose extensions
-    match SUPPORTED_EXTENSIONS. Files are sorted alphabetically by
-    full path for consistent output ordering.
+    Walks the directory tree with ``os.walk`` and collects every file
+    whose extension matches ``SUPPORTED_EXTENSIONS``. Skips Windows
+    system folders (``$RECYCLE.BIN``, ``System Volume Information``),
+    hidden directories (``.git``, ``.venv``, etc.), and tolerates
+    permission errors by logging and continuing.
 
     Args:
-        folder (str): Path to the root folder to scan.
+        folder_path (str): Path to the root folder to scan.
 
     Returns:
         list[str]: Sorted list of absolute file paths for supported images.
     """
     files = []
-    for f in sorted(os.listdir(folder_path)):
-        ext = Path(f).suffix.lower()
-        if ext in SUPPORTED_EXTENSIONS:
-            files.append(os.path.join(folder_path, f))
+    for root, dirs, names in os.walk(folder_path, onerror=None):
+        # Prune skip-list directories in-place so os.walk doesn't descend.
+        dirs[:] = [d for d in dirs if not _should_skip_dir(d)]
+        for name in names:
+            ext = Path(name).suffix.lower()
+            if ext in SUPPORTED_EXTENSIONS:
+                files.append(os.path.join(root, name))
+    files.sort()
     return files
+
+
+def prescan_folder(folder_path, progress_callback=None, cancel_event=None):
+    """
+    Walk a folder tree once and tally counts by file extension.
+
+    Unlike :func:`scan_folder` this does not return the file paths —
+    it's an informational pass used by the GUI's "Pre-Scan Folder"
+    button to show users how many files, folders, and image types they
+    have before committing to a full cataloging run. Only filesystem
+    metadata is read, so it's ~100–1000× faster than a real catalog run.
+
+    Args:
+        folder_path (str): Path to the root folder to scan.
+        progress_callback (callable, optional): Called periodically with
+            ``(files_seen, folders_seen)`` so the GUI can update a
+            running counter. Invoked every 250 files to keep signal
+            traffic light.
+        cancel_event (threading.Event, optional): If set partway through
+            the walk, returns early with whatever has been counted so far.
+
+    Returns:
+        dict with keys:
+            ``total_files``:     int — every file visited
+            ``total_folders``:   int — every folder visited (excluding skipped)
+            ``supported_count``: int — files matching SUPPORTED_EXTENSIONS
+            ``other_count``:     int — everything else
+            ``supported_by_ext``: Counter[str, int] — e.g. {'.jpg': 6892, '.heic': 1112}
+            ``other_by_ext``:    Counter[str, int] — e.g. {'.mp4': 1230, '.pdf': 412}
+            ``cancelled``:       bool — True if the scan was interrupted
+    """
+    supported_counter = Counter()
+    other_counter = Counter()
+    total_files = 0
+    total_folders = 0
+    cancelled = False
+
+    for root, dirs, names in os.walk(folder_path, onerror=None):
+        dirs[:] = [d for d in dirs if not _should_skip_dir(d)]
+        total_folders += 1
+        for name in names:
+            total_files += 1
+            ext = Path(name).suffix.lower()
+            if ext in SUPPORTED_EXTENSIONS:
+                supported_counter[ext] += 1
+            elif ext:
+                other_counter[ext] += 1
+            else:
+                # Files with no extension (README, Makefile, etc.)
+                other_counter["(none)"] += 1
+
+            # Progress throttled to every 250 files so we don't spam
+            # Qt signals — still smooth enough at typical walk rates.
+            if progress_callback is not None and total_files % 250 == 0:
+                progress_callback(total_files, total_folders)
+
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            break
+
+    # One last callback so the final count shows even if we aren't on
+    # the 250-file boundary.
+    if progress_callback is not None:
+        progress_callback(total_files, total_folders)
+
+    return {
+        "total_files": total_files,
+        "total_folders": total_folders,
+        "supported_count": sum(supported_counter.values()),
+        "other_count": sum(other_counter.values()),
+        "supported_by_ext": supported_counter,
+        "other_by_ext": other_counter,
+        "cancelled": cancelled,
+    }
 
 
 def convert_gps_to_decimal(gps_coords, gps_ref):
@@ -126,6 +219,89 @@ def convert_gps_to_decimal(gps_coords, gps_ref):
             decimal = -decimal
         return round(decimal, 6)
     except (TypeError, ValueError, IndexError):
+        return None
+
+
+# openpyxl rejects any string that contains ASCII control characters
+# in these ranges and raises IllegalCharacterError on wb.save(). This
+# shows up in the wild on EXIF fields from older cameras (e.g. Canon
+# PowerShot SD1000 stores 'Canon PowerShot SD1000' followed by NUL
+# padding in the Model tag), and it aborts the whole workbook write.
+# The regex mirrors openpyxl's own ILLEGAL_CHARACTERS_RE.
+_EXCEL_ILLEGAL_CHARS_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
+
+
+# ---------------------------------------------------------------------------
+# Concern severity markers — CR #1 ("FileDate fallback + File_Concern")
+# ---------------------------------------------------------------------------
+# Concerns are short messages, prefixed with [INFO] / [WARN] / [ERROR],
+# that we surface into the File_Concern column and yellow/red-highlight
+# at write time. Promoting previously-silent issues (sanitized EXIF,
+# division-by-zero skips, stat failures, missing dates) into first-class
+# data makes the workbook auditable and drives the rename-engine's
+# validity gate.
+CONCERN_INFO = "[INFO]"
+CONCERN_WARN = "[WARN]"
+CONCERN_ERROR = "[ERROR]"
+CONCERN_MARKERS = (CONCERN_INFO, CONCERN_WARN, CONCERN_ERROR)
+
+# Cell fill colors used by write_excel() when any of the above markers
+# appear. INFO/WARN share one shade; ERROR gets a distinct shade so the
+# eye can pick them out quickly when scrolling.
+CONCERN_FILL_YELLOW = "FFFFE699"   # pale yellow for [INFO] / [WARN]
+CONCERN_FILL_RED    = "FFFFC7CE"   # pale red for [ERROR]
+
+
+def _sanitize_cell_value(val, concerns=None, field=None):
+    """
+    Scrub control characters from strings before handing them to
+    openpyxl. Leaves non-string types (datetime, int, float, None, etc.)
+    untouched so Excel-native types still round-trip correctly.
+
+    If *concerns* (a list) and *field* are supplied and sanitization
+    actually changed the value, appends a ``[WARN]`` message describing
+    which field was scrubbed.
+    """
+    if isinstance(val, str):
+        # Strip NUL + other illegal control chars, then trim any trailing
+        # whitespace those nulls were padding out.
+        cleaned = _EXCEL_ILLEGAL_CHARS_RE.sub('', val).rstrip()
+        if concerns is not None and field and cleaned != val:
+            concerns.append(
+                f"{CONCERN_WARN} Sanitized illegal characters in {field}"
+            )
+        return cleaned
+    return val
+
+
+def _safe_float(val, concerns=None, field=None):
+    """
+    Convert an EXIF value to float, returning None for anything that
+    can't be coerced safely.
+
+    Pillow represents rational EXIF fields (ExposureTime, FNumber, etc.)
+    as ``IFDRational`` objects whose ``__float__`` raises
+    ``ZeroDivisionError`` when the rational's denominator is 0 — a
+    common malformation in scanner-produced JPEGs (passports, receipts,
+    flatbed scans) where EXIF is stripped or half-populated. Catching it
+    here lets the catalog keep running and simply leave the field blank
+    for those files rather than failing the whole run.
+
+    If *concerns* (a list) and *field* are supplied and we hit a
+    ``ZeroDivisionError``, appends a ``[WARN]`` message so the row is
+    flagged in File_Concern instead of silently dropping the value.
+    """
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except ZeroDivisionError:
+        if concerns is not None and field:
+            concerns.append(
+                f"{CONCERN_WARN} Skipped EXIF {field} \u2014 division by zero"
+            )
+        return None
+    except (TypeError, ValueError):
         return None
 
 
@@ -147,11 +323,15 @@ def format_exposure_time(val):
         return None
     try:
         val = float(val)
+        if val == 0:
+            # Some scanner/phone JPEGs store ExposureTime == 0. Treat
+            # it as "not available" rather than dividing by zero below.
+            return None
         if val < 1:
             denom = round(1 / val)
             return f"1/{denom}"
         return f"{val:.1f}"
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, ZeroDivisionError):
         return str(val)
 
 
@@ -173,11 +353,11 @@ def format_lens_spec(spec):
         return None
     try:
         return f"{float(spec[0]):.1f}-{float(spec[1]):.1f}mm f/{float(spec[2]):.1f}-{float(spec[3]):.1f}"
-    except (TypeError, ValueError, IndexError):
+    except (TypeError, ValueError, IndexError, ZeroDivisionError):
         return str(spec)
 
 
-def extract_exif(filepath):
+def extract_exif(filepath, concerns=None):
     """
     Extract EXIF metadata from an image file using Pillow.
 
@@ -189,6 +369,10 @@ def extract_exif(filepath):
 
     Args:
         filepath (str): Path to the image file.
+        concerns (list, optional): If supplied, receives ``[WARN]`` /
+            ``[ERROR]`` strings describing any EXIF values we had to
+            skip (e.g. division-by-zero rationals). Caller is expected
+            to surface these via the File_Concern column.
 
     Returns:
         dict: Key-value pairs of extracted metadata fields.
@@ -243,48 +427,42 @@ def extract_exif(filepath):
             data['LensModel'] = str(value).strip()
         elif tag == 'LensSpecification':
             data['LensSpec'] = format_lens_spec(value)
-        elif tag == 'DateTime':
-            data['DateTimeModified'] = str(value)
         elif tag == 'DateTimeOriginal':
             data['DateTimeOriginal'] = str(value)
-        elif tag == 'DateTimeDigitized':
-            data['DateTimeDigitized'] = str(value)
         elif tag == 'OffsetTime':
             data['OffsetTime'] = str(value)
         elif tag == 'OffsetTimeOriginal':
             data['OffsetTimeOriginal'] = str(value)
         elif tag == 'OffsetTimeDigitized':
             data['OffsetTimeDigitized'] = str(value)
-        elif tag == 'SubsecTimeOriginal':
-            data['SubSecTimeOriginal'] = str(value)
-        elif tag == 'SubsecTimeDigitized':
-            data['SubSecTimeDigitized'] = str(value)
         elif tag == 'ExposureTime':
             data['ExposureTime'] = format_exposure_time(value)
         elif tag == 'FNumber':
-            data['FNumber'] = round(float(value), 2) if value else None
+            fv = _safe_float(value, concerns, 'FNumber')
+            data['FNumber'] = round(fv, 2) if fv is not None else None
         elif tag == 'ISOSpeedRatings':
-            data['ISO'] = int(value) if value else None
+            fv = _safe_float(value, concerns, 'ISO')
+            data['ISO'] = int(fv) if fv is not None else None
         elif tag == 'ShutterSpeedValue':
-            data['ShutterSpeed'] = round(float(value), 2) if value else None
+            fv = _safe_float(value, concerns, 'ShutterSpeed')
+            data['ShutterSpeed'] = round(fv, 2) if fv is not None else None
         elif tag == 'ApertureValue':
-            data['Aperture'] = round(float(value), 2) if value else None
+            fv = _safe_float(value, concerns, 'Aperture')
+            data['Aperture'] = round(fv, 2) if fv is not None else None
         elif tag == 'BrightnessValue':
-            data['Brightness'] = round(float(value), 2) if value else None
+            fv = _safe_float(value, concerns, 'Brightness')
+            data['Brightness'] = round(fv, 2) if fv is not None else None
         elif tag == 'ExposureBiasValue':
-            data['ExposureBias'] = round(float(value), 2) if value else None
-        elif tag == 'ExposureProgram':
-            data['ExposureProgram'] = EXIF_EXPOSURE_PROGRAMS.get(value, str(value))
-        elif tag == 'ExposureMode':
-            data['ExposureMode'] = EXIF_EXPOSURE_MODE.get(value, str(value))
-        elif tag == 'MeteringMode':
-            data['MeteringMode'] = EXIF_METERING_MODES.get(value, str(value))
+            fv = _safe_float(value, concerns, 'ExposureBias')
+            data['ExposureBias'] = round(fv, 2) if fv is not None else None
         elif tag == 'Flash':
             data['Flash'] = EXIF_FLASH_MODES.get(value, str(value))
         elif tag == 'FocalLength':
-            data['FocalLength_mm'] = round(float(value), 2) if value else None
+            fv = _safe_float(value, concerns, 'FocalLength_mm')
+            data['FocalLength_mm'] = round(fv, 2) if fv is not None else None
         elif tag == 'FocalLengthIn35mmFilm':
-            data['FocalLength35mm'] = int(value) if value else None
+            fv = _safe_float(value, concerns, 'FocalLength35mm')
+            data['FocalLength35mm'] = int(fv) if fv is not None else None
         elif tag == 'WhiteBalance':
             data['WhiteBalance'] = EXIF_WHITE_BALANCE.get(value, str(value))
         elif tag == 'SceneCaptureType':
@@ -305,9 +483,11 @@ def extract_exif(filepath):
             if tag == 'HostComputer':
                 data['HostComputer'] = str(value).strip()
         elif tag == 'XResolution':
-            data['XResolution'] = int(float(value)) if value else None
+            fv = _safe_float(value, concerns, 'XResolution')
+            data['XResolution'] = int(fv) if fv is not None else None
         elif tag == 'YResolution':
-            data['YResolution'] = int(float(value)) if value else None
+            fv = _safe_float(value, concerns, 'YResolution')
+            data['YResolution'] = int(fv) if fv is not None else None
         elif tag == 'SubjectLocation':
             data['SubjectLocation'] = str(value)
 
@@ -326,17 +506,17 @@ def extract_exif(filepath):
                 if ref == 1:
                     alt = -alt
                 data['GPSAltitude_m'] = round(alt, 1)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, ZeroDivisionError):
                 pass
         if 'GPSSpeed' in gps_info:
             try:
                 data['GPSSpeed'] = round(float(gps_info['GPSSpeed']), 2)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, ZeroDivisionError):
                 pass
         if 'GPSImgDirection' in gps_info:
             try:
                 data['GPSImgDirection'] = round(float(gps_info['GPSImgDirection']), 2)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, ZeroDivisionError):
                 pass
         if 'GPSDateStamp' in gps_info:
             data['GPSDateStamp'] = str(gps_info['GPSDateStamp'])
@@ -436,6 +616,18 @@ def extract_xmp(filepath):
 
 
 def extract_metadata(filepath):
+    """
+    Build one catalog row from a single image file.
+
+    The row uses the ``File_`` prefix on every app-generated / filesystem-
+    sourced column (see CR #1) so they group visually to the left of the
+    camera-sourced EXIF/XMP fields.
+
+    The row carries an internal ``_concerns`` list (not a column) that
+    write_excel() flattens into the ``File_Concern`` cell — severity
+    markers ``[INFO]`` / ``[WARN]`` / ``[ERROR]`` drive row highlighting
+    and, in a later phase, rename/move gating.
+    """
     filename = os.path.basename(filepath)
     file_size = os.path.getsize(filepath)
     if file_size > 1024 * 1024:
@@ -443,14 +635,44 @@ def extract_metadata(filepath):
     else:
         size_str = f"{file_size / 1024:.0f} KB"
 
+    # Normalize extension to lowercase-with-dot (e.g. '.jpg', '.heic') so
+    # the column sorts/filters cleanly regardless of on-disk case
+    # ('IMG_6596.JPG' and 'img_6596.jpg' both become '.jpg').
+    file_ext = Path(filename).suffix.lower()
+
+    concerns: list = []
+
+    # File_Date — capture the filesystem Modified timestamp so the
+    # rename engine can fall back on it when DateTimeOriginal is blank
+    # (and, more generally, so users who filter by "real shoot date"
+    # have something to fall back on for scanned/processed files).
+    file_date = None
+    try:
+        file_date = datetime.fromtimestamp(os.stat(filepath).st_mtime)
+    except OSError as e:
+        concerns.append(
+            f"{CONCERN_ERROR} Could not read file Modified date: {e}"
+        )
+
     row = {
-        'FileName': filename,
-        'FilePath': filepath,
-        'FileSize': size_str,
-        'FileSizeBytes': file_size,
+        'File_Name': filename,
+        'File_Extension': file_ext,
+        # File_RenameName is populated later by the rename engine — kept
+        # in the row dict (and in COLUMN_ORDER) as a blank placeholder
+        # so the column always exists in the workbook even before the
+        # user runs a rename pass.
+        'File_RenameName': None,
+        'File_Path': filepath,
+        'File_Size': size_str,
+        'File_SizeBytes': file_size,
+        'File_Date': file_date,
+        # File_Concern is written as the final join of _concerns at
+        # workbook-write time; placeholder here keeps the column order.
+        'File_Concern': None,
+        '_concerns': concerns,
     }
 
-    exif = extract_exif(filepath)
+    exif = extract_exif(filepath, concerns=concerns)
     row.update(exif)
 
     xmp = extract_xmp(filepath)
@@ -460,17 +682,21 @@ def extract_metadata(filepath):
 
 
 # --- Preferred column order ---
+# App-generated / filesystem-sourced columns use the File_ prefix and
+# group together on the left of the workbook so they visually separate
+# from EXIF/XMP camera-sourced fields. File_Concern sits just before
+# File_Path so it reads as a "flags" column paired with the source path.
 COLUMN_ORDER = [
-    'FileName', 'FilePath', 'FileSize', 'FileSizeBytes',
+    'File_Name', 'File_Extension', 'File_RenameName',
+    'File_Size', 'File_SizeBytes', 'File_Date',
+    'File_Concern', 'File_Path',
     'ImageWidth', 'ImageHeight',
     'CameraMake', 'CameraModel', 'HostComputer', 'Software',
     'LensMake', 'LensModel', 'LensSpec',
-    'DateTimeOriginal', 'DateTimeDigitized', 'DateTimeModified',
+    'DateTimeOriginal',
     'OffsetTime', 'OffsetTimeOriginal', 'OffsetTimeDigitized',
-    'SubSecTimeOriginal', 'SubSecTimeDigitized',
     'ExposureTime', 'FNumber', 'ISO',
     'ShutterSpeed', 'Aperture', 'Brightness', 'ExposureBias',
-    'ExposureProgram', 'ExposureMode', 'MeteringMode',
     'Flash', 'FocalLength_mm', 'FocalLength35mm',
     'WhiteBalance', 'SceneCaptureType', 'SensingMethod', 'ColorSpace',
     'CompositeImage', 'Orientation',
@@ -480,15 +706,36 @@ COLUMN_ORDER = [
     'FaceCount_Detected', 'PersonNames',
 ]
 
+# Row-dict keys that are carried through the pipeline but should never
+# be written as a workbook column (they're internal plumbing).
+_INTERNAL_ROW_KEYS = {'_concerns'}
+
 
 def build_column_list(all_rows):
     all_keys = set()
     for row in all_rows:
         all_keys.update(row.keys())
+    all_keys -= _INTERNAL_ROW_KEYS
 
     ordered = [c for c in COLUMN_ORDER if c in all_keys]
     remaining = sorted(all_keys - set(ordered))
     return ordered + remaining
+
+
+def _tally_concern_severity(concerns):
+    """
+    Count occurrences of each severity marker across *concerns* (a list
+    of strings). Returns a dict with keys 'info', 'warn', 'error'.
+    """
+    info = warn = error = 0
+    for msg in concerns:
+        if CONCERN_ERROR in msg:
+            error += 1
+        if CONCERN_WARN in msg:
+            warn += 1
+        if CONCERN_INFO in msg:
+            info += 1
+    return {'info': info, 'warn': warn, 'error': error}
 
 
 def write_excel(all_rows, output_path, folder_name):
@@ -499,6 +746,11 @@ def write_excel(all_rows, output_path, folder_name):
       - Catalog: One row per photo with all metadata columns, formatted with
         headers, alternating row colors, auto-filter, and frozen header row.
         Date columns use proper Excel date formatting (Phase 2 enhancement).
+        The File_Concern column is populated from each row's internal
+        ``_concerns`` list (sanitization warnings, division-by-zero skips,
+        fallback-date notices, stat-failure errors) and the cell is filled
+        with a pale yellow (info/warn) or pale red (error) shade based on
+        the highest severity present.
       - Summary: Statistics overview including photo count, date range,
         camera/lens breakdown, exposure stats, GPS coverage, and face data.
 
@@ -508,7 +760,9 @@ def write_excel(all_rows, output_path, folder_name):
         folder_name (str): Name of the scanned folder (shown in Summary).
 
     Returns:
-        tuple[int, int]: (number_of_columns, number_of_rows) written.
+        tuple[int, int, dict]: ``(number_of_columns, number_of_rows, concern_totals)``
+        where ``concern_totals`` has keys ``info``, ``warn``, ``error``,
+        ``rows_with_concerns``, and ``total_rows``.
     """
     columns = build_column_list(all_rows)
 
@@ -527,6 +781,17 @@ def write_excel(all_rows, output_path, folder_name):
         bottom=Side(style='thin', color='D9E2F3')
     )
     alt_fill = PatternFill('solid', fgColor='F2F2F2')
+    concern_fill_yellow = PatternFill('solid', fgColor=CONCERN_FILL_YELLOW)
+    concern_fill_red = PatternFill('solid', fgColor=CONCERN_FILL_RED)
+
+    # Find the File_Concern column index (if present) so we can skip it
+    # in the main write loop and populate it once per row after all
+    # other cells are in place (sanitization during the loop appends
+    # entries to row['_concerns'], and we want those included).
+    try:
+        concern_col_idx = columns.index('File_Concern') + 1
+    except ValueError:
+        concern_col_idx = None
 
     # Write headers
     for col_idx, col_name in enumerate(columns, 1):
@@ -539,14 +804,43 @@ def write_excel(all_rows, output_path, folder_name):
     # Excel date format string
     date_number_format = 'YYYY-MM-DD HH:MM:SS'
 
+    # Aggregate severity counter rolled up across the whole run so
+    # run_catalog can log a one-line summary to the user.
+    all_concerns: list = []
+    rows_with_concerns = 0
+
     # Write data
     for row_idx, row_data in enumerate(all_rows, 2):
+        concerns = row_data.get('_concerns') or []
         for col_idx, col_name in enumerate(columns, 1):
+            # File_Concern is populated last (after sanitization may add
+            # more entries). Skip here so the cell's final value reflects
+            # the full list.
+            if col_idx == concern_col_idx:
+                # Still write the alt-fill background on the placeholder
+                # cell so the column isn't visually blank mid-run — the
+                # concern-fill below will override this if applicable.
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell.font = cell_font
+                cell.alignment = cell_align
+                cell.border = thin_border
+                if row_idx % 2 == 0:
+                    cell.fill = alt_fill
+                continue
+
             val = row_data.get(col_name)
 
-            # Convert date columns to proper Excel datetime values
-            if col_name in DATE_COLUMNS and val is not None:
+            # Convert date columns to proper Excel datetime values.
+            # File_Date is already a datetime from extract_metadata;
+            # DateTimeOriginal arrives as a string and needs parsing.
+            if col_name in DATE_COLUMNS and val is not None and not isinstance(val, datetime):
                 val = parse_exif_date(val)
+
+            # Scrub NUL / control chars from strings so openpyxl doesn't
+            # raise IllegalCharacterError on quirky camera EXIF padding.
+            # Pass in the row's concerns list so scrubbed fields get a
+            # [WARN] entry and the row is flagged in File_Concern.
+            val = _sanitize_cell_value(val, concerns=concerns, field=col_name)
 
             cell = ws.cell(row=row_idx, column=col_idx, value=val)
             cell.font = cell_font
@@ -558,6 +852,20 @@ def write_excel(all_rows, output_path, folder_name):
             cell.border = thin_border
             if row_idx % 2 == 0:
                 cell.fill = alt_fill
+
+        # Flatten the row's concerns into the File_Concern cell and
+        # pick a fill color based on the highest severity present.
+        if concern_col_idx is not None:
+            cell = ws.cell(row=row_idx, column=concern_col_idx)
+            if concerns:
+                rows_with_concerns += 1
+                all_concerns.extend(concerns)
+                cell.value = "; ".join(concerns)
+                if any(CONCERN_ERROR in c for c in concerns):
+                    cell.fill = concern_fill_red
+                else:
+                    # [INFO] and [WARN] share the same pale yellow shade.
+                    cell.fill = concern_fill_yellow
 
     # Auto-fit column widths
     for col_idx, col_name in enumerate(columns, 1):
@@ -604,11 +912,16 @@ def write_excel(all_rows, output_path, folder_name):
     ws2.cell(row=r, column=2, value=photo_count).font = value_font
     r += 1
 
-    # Date range
+    # Date range — prefer DateTimeOriginal, fall back to File_Date so
+    # rows missing EXIF still contribute to the span (CR #1).
     dates = []
     for row in all_rows:
-        dt = row.get('DateTimeOriginal')
-        if dt:
+        dt = row.get('DateTimeOriginal') or row.get('File_Date')
+        if not dt:
+            continue
+        if isinstance(dt, datetime):
+            dates.append(dt)
+        else:
             try:
                 dates.append(datetime.strptime(str(dt)[:19], '%Y:%m:%d %H:%M:%S'))
             except ValueError:
@@ -741,7 +1054,12 @@ def write_excel(all_rows, output_path, folder_name):
             r += 1
 
     wb.save(output_path)
-    return len(columns), photo_count
+
+    # Aggregate severity tally so run_catalog can log a summary line.
+    concern_totals = _tally_concern_severity(all_concerns)
+    concern_totals['rows_with_concerns'] = rows_with_concerns
+    concern_totals['total_rows'] = photo_count
+    return len(columns), photo_count, concern_totals
 
 
 def main():
@@ -809,8 +1127,16 @@ def main():
     # Phase 3: Write Excel
     print(f"\n--- Phase 3: Writing Excel ---")
     print(f"Output: {output_path}")
-    num_cols, num_rows = write_excel(all_rows, output_path, folder_name)
-    print(f"Done! {num_rows} photos × {num_cols} columns")
+    num_cols, num_rows, concern_totals = write_excel(all_rows, output_path, folder_name)
+    print(f"Done! {num_rows} photos \u00d7 {num_cols} columns")
+    if concern_totals['rows_with_concerns']:
+        print(
+            f"File_Concern markers: "
+            f"[INFO] {concern_totals['info']:,}, "
+            f"[WARN] {concern_totals['warn']:,}, "
+            f"[ERROR] {concern_totals['error']:,} "
+            f"across {concern_totals['rows_with_concerns']:,} row(s)"
+        )
 
 
 if __name__ == '__main__':

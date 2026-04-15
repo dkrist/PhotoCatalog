@@ -15,14 +15,20 @@ files without killing the process.
 import os
 import threading
 from datetime import datetime
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
-from photo_catalog import scan_folder, extract_metadata, write_excel
+from photo_catalog import (
+    extract_metadata,
+    prescan_folder as _engine_prescan,
+    scan_folder,
+    write_excel,
+)
 
 
 # Typed aliases for clarity on the callback signatures.
 ProgressCallback = Callable[[int, int, str], None]   # (current, total, message)
 LogCallback = Callable[[str], None]                   # (text) -> None
+PrescanProgressCallback = Callable[[int, int], None]  # (files_seen, folders_seen)
 
 
 class CatalogCancelled(Exception):
@@ -101,6 +107,72 @@ def is_file_locked(path: str) -> bool:
     except OSError:
         # Other I/O errors — treat as locked to be safe.
         return True
+
+
+def run_prescan(
+    folder: str,
+    progress_callback: Optional[PrescanProgressCallback] = None,
+    log_callback: Optional[LogCallback] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> Dict:
+    """
+    Run an informational pre-scan of ``folder`` and log a summary.
+
+    This is a thin wrapper over ``photo_catalog.prescan_folder`` that
+    adds nicely-formatted log output so callers (GUI, CLI) can print
+    the same report. Returns the raw result dict for further inspection.
+
+    Args:
+        folder: Path to the folder tree to pre-scan.
+        progress_callback: Called periodically during the walk with
+            ``(files_seen, folders_seen)``. Passed through unchanged.
+        log_callback: Receives human-readable status messages — the
+            formatted report is delivered via this callback.
+        cancel_event: If set partway through, the walk returns early.
+
+    Returns:
+        The dict produced by ``prescan_folder`` plus a ``formatted_report``
+        string suitable for writing to a log file.
+
+    Raises:
+        FileNotFoundError: folder does not exist.
+    """
+    log = log_callback or _noop_log
+
+    if not os.path.isdir(folder):
+        raise FileNotFoundError(f"'{folder}' is not a valid directory.")
+
+    log(f"=== Pre-scan: {folder} ===")
+    result = _engine_prescan(
+        folder,
+        progress_callback=progress_callback,
+        cancel_event=cancel_event,
+    )
+
+    # Build the formatted report that mirrors the CR spec.
+    lines = [f"=== Pre-scan: {folder} ==="]
+    if result["cancelled"]:
+        lines.append("(cancelled by user — counts below are partial)")
+    lines.append(f"Folders scanned: {result['total_folders']:>10,}")
+    lines.append(f"Total files:     {result['total_files']:>10,}")
+    lines.append(f"Supported images:{result['supported_count']:>10,}")
+    for ext, count in result["supported_by_ext"].most_common():
+        lines.append(f"  {ext:<8} {count:>8,}")
+    lines.append(f"Other files:     {result['other_count']:>10,}")
+    for ext, count in result["other_by_ext"].most_common(15):
+        lines.append(f"  {ext:<8} {count:>8,}")
+    extra = len(result["other_by_ext"]) - 15
+    if extra > 0:
+        lines.append(f"  (+{extra} more extension{'s' if extra != 1 else ''})")
+    report = "\n".join(lines)
+
+    # Stream each line to the callback so it appears progressively in
+    # the log panel rather than as one big blob.
+    for line in lines[1:]:
+        log(line)
+
+    result["formatted_report"] = report
+    return result
 
 
 def run_catalog(
@@ -207,7 +279,21 @@ def run_catalog(
     _check_cancel(cancel_event)
     log("--- Phase 3: Writing Excel ---")
     log(f"Output: {output_path}")
-    num_cols, num_rows = write_excel(all_rows, output_path, folder_name)
+    num_cols, num_rows, concern_totals = write_excel(all_rows, output_path, folder_name)
     log(f"Done! {num_rows} photos x {num_cols} columns")
+
+    # CR #1 summary line: one-line tally of File_Concern markers across
+    # the whole run so the user can see at a glance whether any rows
+    # were flagged (and whether any of them are [ERROR] rows that will
+    # block a future rename/move pass).
+    if concern_totals.get('rows_with_concerns'):
+        log(
+            f"File_Concern markers: [INFO] {concern_totals['info']:,}, "
+            f"[WARN] {concern_totals['warn']:,}, "
+            f"[ERROR] {concern_totals['error']:,} "
+            f"across {concern_totals['rows_with_concerns']:,} row(s)"
+        )
+    else:
+        log("File_Concern: no issues flagged.")
 
     return output_path, num_rows, num_cols

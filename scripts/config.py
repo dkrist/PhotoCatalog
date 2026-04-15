@@ -36,8 +36,12 @@ SUPPORTED_VIDEO_EXTENSIONS = {
 # Any metadata fields not listed here will appear after these columns,
 # sorted alphabetically.
 COLUMN_ORDER = [
-    # File info
-    'FileName', 'FilePath', 'FileSize', 'FileSizeBytes',
+    # File info (all app-generated / filesystem-sourced columns use
+    # the File_ prefix so they group together on the left side of the
+    # workbook and visually separate from EXIF/XMP camera metadata).
+    'File_Name', 'File_Extension', 'File_RenameName',
+    'File_Size', 'File_SizeBytes', 'File_Date',
+    'File_Concern', 'File_Path',
     'ImageWidth', 'ImageHeight',
 
     # Camera and lens identification
@@ -45,14 +49,12 @@ COLUMN_ORDER = [
     'LensMake', 'LensModel', 'LensSpec',
 
     # Date/time fields (formatted as Excel dates in Phase 2 enhancement)
-    'DateTimeOriginal', 'DateTimeDigitized', 'DateTimeModified',
+    'DateTimeOriginal',
     'OffsetTime', 'OffsetTimeOriginal', 'OffsetTimeDigitized',
-    'SubSecTimeOriginal', 'SubSecTimeDigitized',
 
     # Exposure settings
     'ExposureTime', 'FNumber', 'ISO',
     'ShutterSpeed', 'Aperture', 'Brightness', 'ExposureBias',
-    'ExposureProgram', 'ExposureMode', 'MeteringMode',
     'Flash', 'FocalLength_mm', 'FocalLength35mm',
     'WhiteBalance', 'SceneCaptureType', 'SensingMethod',
 
@@ -72,20 +74,6 @@ COLUMN_ORDER = [
 # These dictionaries convert numeric EXIF tag values into human-readable
 # labels. The keys match the integer values stored in EXIF metadata;
 # the values are the display strings shown in the Excel output.
-
-# ExposureProgram tag (0x8822) — describes the camera's shooting mode
-EXPOSURE_PROGRAMS = {
-    0: 'Not defined', 1: 'Manual', 2: 'Normal program',
-    3: 'Aperture priority', 4: 'Shutter priority',
-    5: 'Creative program', 6: 'Action program',
-    7: 'Portrait mode', 8: 'Landscape mode',
-}
-
-# MeteringMode tag (0x9207) — how the camera measured light
-METERING_MODES = {
-    0: 'Unknown', 1: 'Average', 2: 'Center-weighted',
-    3: 'Spot', 4: 'Multi-spot', 5: 'Pattern', 6: 'Partial',
-}
 
 # Flash tag (0x9209) — flash status and mode
 # Each value encodes both whether the flash fired and the flash mode setting
@@ -108,7 +96,6 @@ ORIENTATIONS = {
 # Other single-value EXIF lookups
 SCENE_CAPTURE_TYPES = {0: 'Standard', 1: 'Landscape', 2: 'Portrait', 3: 'Night scene'}
 WHITE_BALANCE_MODES = {0: 'Auto', 1: 'Manual'}
-EXPOSURE_MODES = {0: 'Auto', 1: 'Manual', 2: 'Auto bracket'}
 SENSING_METHODS = {
     1: 'Not defined', 2: 'One-chip color area',
     3: 'Two-chip color area', 4: 'Three-chip color area',
