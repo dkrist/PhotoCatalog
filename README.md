@@ -4,7 +4,7 @@ A Windows desktop app that walks a folder (or a whole drive) of photos, reads EX
 
 Built to make large family photo archives **browsable, sortable, and searchable in Excel** — and, as of v3, to **reorganize messy multi-decade photo drives** into a layout you actually want to live with — without any proprietary photo-management software.
 
-![Photo Catalog UI](Images/Screenshot%202026-04-14%20192422.png)
+![image-20260415165704479](C:\Users\david\AppData\Roaming\Typora\typora-user-images\image-20260415165704479.png)
 
 ---
 
