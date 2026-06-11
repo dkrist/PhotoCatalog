@@ -4,6 +4,92 @@ All notable changes to the Photo Catalog App project are documented in this file
 
 ---
 
+## [3.1.0] — 2026-06-11
+
+### Headline — polished UI, guided rename workflow, and quality-of-life improvements
+
+v3.1 focuses on making the UI more intuitive and resilient, especially for
+first-time users working through the rename-and-reorganize workflow.
+
+### Added — Rename template button palette
+
+- **Clickable variable buttons** replace the free-text variable list.
+  Date buttons (YYYY, YY, MM, DD), Camera (Make), File (Name), separator
+  pills (\_, Spc, -, .), and a Clear button let users build templates by
+  clicking instead of typing `%Variable%` tokens. Buttons insert at the
+  cursor position so users can also type freely in the text box.
+- **`%File_Extension%` removed from template variables.** The rename
+  engine now auto-appends the original file extension to every rendered
+  name, eliminating the most common template mistake (forgetting the
+  extension, which would produce files without one).
+
+### Added — Workflow gating and completion indicators
+
+- **Test-before-Build gate.** The *Build Renames for all Photos* button
+  stays disabled until *Test Rename String* has been run successfully on
+  the current template. Changing the template resets the gate.
+- **Warning label** between the Test and Build buttons explains the
+  requirement and updates dynamically as the user progresses.
+- **Checkmarks on all action buttons** — every process button (Pre-Scan,
+  Start Cataloging, Test Rename, Build Renames, Copy to Destination,
+  Move, Delete, Undo, Detect Duplicates) shows a ✔ after successful
+  completion. Checkmarks reset when the relevant input changes (e.g.
+  folder change resets Pre-Scan/Start, template change resets Test/Build).
+- **Copy to Destination confirmation** now includes notes about whether
+  renames have been built and whether the current template has been tested.
+
+### Added — Safety and responsiveness
+
+- **Close confirmation for all running processes.** Closing the window
+  during any background operation (catalog, pre-scan, rename, copy, dupe
+  detection) now prompts "A process is still running — close anyway?"
+- **Source = Destination guard.** Selecting the same folder for both
+  source and destination shows an immediate warning dialog.
+- **Elapsed time badge.** A blue timer badge next to the progress bar
+  shows elapsed time during Pre-Scan, Start Cataloging, Test Rename,
+  and Build Renames operations.
+
+### Added — Keyboard shortcuts
+
+- `Ctrl+P` — Pre-Scan Folder
+- `Ctrl+Enter` — Start Cataloging Process
+- `Ctrl+T` — Test Rename String
+- `Ctrl+D` — Detect Duplicates
+- `Ctrl+Z` — Undo Last Operation
+
+### Added — Non-keepers holding folder label
+
+- A read-only label below the Destination Folder shows the full path
+  where non-keeper files will be moved (`<Destination>\_DupeHolding`),
+  so users know where to look before running Move non-keepers.
+
+### Changed — UI polish
+
+- **Rounded button corners** standardized across all action buttons
+  (`border-radius: 6px`) and template palette pills (`border-radius: 10px`).
+- **Dark border on rename template text box** (`2px solid #333`) with
+  blue focus highlight for better visibility.
+- **White camera icon** on the blue header (SVG) replaces the black PNG
+  for proper contrast. Bounding box borders removed from header elements.
+- **Section separators** — thick blue horizontal rules visually divide
+  the rename section and the process buttons from the progress/log panel.
+- **"Progress & Activity Log"** replaces the old "Process Log Messages"
+  section header for clarity.
+- **HTML-formatted tooltips** on all 11 buttons with max-width wrapping
+  for consistent, readable hover help.
+
+### Fixed — Packaging
+
+- **Help file now bundled in installer.** `documentation/help.html` was
+  missing from the PyInstaller data files, so the Help menu didn't work
+  in the installed version. Added to the `.spec` file and fixed the path
+  resolution to use `_resource_root()` so it works in both development
+  and frozen builds.
+- **PyQt6.QtSvg no longer excluded** from the build, since the app now
+  uses SVG icons (camera icon, checkmark icon).
+
+---
+
 ## [3.0.0] — 2026-04-15
 
 ### Headline — reorganize a messy photo drive into a clean destination

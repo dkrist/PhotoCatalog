@@ -14,7 +14,7 @@
 ; =============================================================================
 
 #define MyAppName        "PhotoCatalog"
-#define MyAppVersion     "3.0.0"
+#define MyAppVersion     "3.1.0"
 #define MyAppPublisher   "David Krist"
 #define MyAppURL         "https://github.com/dkrist/PhotoCatalog"
 #define MyAppExeName     "PhotoCatalog.exe"

@@ -516,7 +516,13 @@ def detect_duplicates_on_workbook(
             cancel_event=cancel_event,
             candidate_paths=candidate_set,
         )
-        log(f"  Hashed {hashed} file(s); {missing_on_disk} no longer on disk.")
+        hash_msg = f"  Hashed {hashed} file(s)."
+        if missing_on_disk:
+            hash_msg += (
+                f" {missing_on_disk} file(s) skipped "
+                f"(no longer found at their original path)."
+            )
+        log(hash_msg)
         if cancel_event is not None and cancel_event.is_set():
             log("Cancelled during hashing — workbook not modified.")
             return {

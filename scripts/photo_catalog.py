@@ -927,8 +927,7 @@ def write_excel(all_rows, output_path, folder_name):
     section_font = Font(name='Arial', bold=True, size=12, color='2F5496')
     section_fill = PatternFill('solid', fgColor='D9E2F3')
 
-    ws2.column_dimensions['A'].width = 30
-    ws2.column_dimensions['B'].width = 50
+    # Column widths are auto-fitted after all data is written (see below).
 
     r = 1
     ws2.cell(row=r, column=1, value="Photo Catalog Summary").font = title_font
@@ -1091,6 +1090,17 @@ def write_excel(all_rows, output_path, folder_name):
             ws2.cell(row=r, column=1, value=f"  {person}").font = value_font
             ws2.cell(row=r, column=2, value=f"{count} photos").font = value_font
             r += 1
+
+    # Autofit columns A and B on the Summary sheet by scanning actual
+    # cell values.  The multiplier accounts for the font being ~1.2x
+    # wider than a monospace character and adds a small padding cushion.
+    for col_letter in ('A', 'B'):
+        max_len = 0
+        for cell in ws2[col_letter]:
+            if cell.value is not None:
+                max_len = max(max_len, len(str(cell.value)))
+        # Minimum 12 so narrow labels don't look cramped; cap at 80.
+        ws2.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 80)
 
     wb.save(output_path)
 

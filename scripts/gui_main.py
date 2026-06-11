@@ -1,4 +1,5 @@
 """
+        self._stop_elapsed_timer()
 gui_main.py — PyQt6 desktop UI for PhotoCatalog.
 
 Layout mirrors the wireframe in /Images/PhotoCatalog UI Wireframe.png:
@@ -36,13 +37,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QObject, Qt, QThread, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
+from PyQt6.QtCore import QObject, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
-    QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -51,10 +53,11 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenuBar,
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QRadioButton,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -76,6 +79,7 @@ from copy_engine import (
     delete_non_keepers,
     find_empty_source_folders,
     move_non_keepers,
+    refresh_destination_columns,
     remove_empty_source_folders,
 )
 from duplicate_detector import compute_md5, detect_duplicates_on_workbook  # noqa: F401
@@ -101,7 +105,11 @@ from settings import get_settings
 # Paths and metadata
 # ---------------------------------------------------------------------------
 APP_TITLE = "The Photo Catalog Project"
-APP_VERSION = "V3"
+APP_VERSION = "V3.1"
+# Release date — bump this when tagging a new version so the header
+# reads "V3 — 4/16/2026" (the date the version was published, not
+# the date the file was last edited).
+APP_RELEASE_DATE = "6/11/2026"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -123,14 +131,17 @@ def _resource_root() -> Path:
 
 IMAGES_DIR = _resource_root() / "Images"
 CAMERA_ICON = IMAGES_DIR / "camera-icon-52.png"
+CAMERA_ICON_WHITE = IMAGES_DIR / "camera-icon-white.svg"
 CLAUDE_ICON = IMAGES_DIR / "250px-Claude_AI_symbol.svg.png"
+CHECKMARK_ICON = IMAGES_DIR / "checkmark-white.svg"
+HELP_FILE = _resource_root() / "documentation" / "help.html"
 
 
 # Shared button style — blue banner fill with white text.
 # Used by Browse, Open Catalog Report, and Open Process Log.
 BLUE_BUTTON_STYLE = (
     "QPushButton { background-color: #2f5b9a; color: #ffffff; font-weight: bold;"
-    " border: 1px solid #1e3f6f; padding: 4px 10px; }"
+    " border: 1px solid #1e3f6f; padding: 4px 10px; border-radius: 6px; }"
     "QPushButton:hover { background-color: #3a6cb0; }"
     "QPushButton:pressed { background-color: #234673; }"
     "QPushButton:disabled { background-color: #8ea6c6; color: #f0f0f0;"
@@ -139,17 +150,14 @@ BLUE_BUTTON_STYLE = (
 
 
 def _build_version_label() -> str:
-    """Return 'Vx – M/D/YYYY' using the last-modified date of this source file.
+    """Return 'Vx – M/D/YYYY' using the hardcoded APP_RELEASE_DATE.
 
-    This means the header date updates automatically whenever the UI code
-    is edited — no manual bump required. If the mtime can't be read for
-    any reason, today's date is used as a fallback.
+    Previous versions derived this from gui_main.py's file mtime, but
+    that changed every time the file was edited — not the actual release
+    date. Now we use a constant that's bumped alongside APP_VERSION in
+    the release process.
     """
-    try:
-        mtime = datetime.fromtimestamp(Path(__file__).stat().st_mtime)
-    except OSError:
-        mtime = datetime.now()
-    return f"{APP_VERSION} \u2013 {mtime.month}/{mtime.day}/{mtime.year}"
+    return f"{APP_VERSION} \u2013 {APP_RELEASE_DATE}"
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +479,7 @@ class _ProgressFormatProxy:
     renders inside the bar itself instead of in a separate label to
     its right. Saves a row of vertical space without forcing every
     progress update site in the file to be rewritten.
+
     """
 
     def __init__(self, bar: QProgressBar) -> None:
@@ -508,9 +517,73 @@ class MainWindow(QMainWindow):
         # same folder still selected) before Start Cataloging is enabled.
         self.prescanned_folder: Optional[str] = None
 
+        # Elapsed-time timer — ticks once per second while a long
+        # operation is running and updates the progress bar format.
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(1000)
+        self._elapsed_timer.timeout.connect(self._on_elapsed_tick)
+        self._elapsed_seconds = 0
+
+        # Source=Destination warning guard
+        self._src_dst_warned = False
+
+        # Test Rename gating flag — Build Renames is disabled until
+        # the user runs Test Rename successfully.
+        self._test_rename_passed = False
+
         self._configure_logging()
         self._build_ui()
         self._load_initial_values()
+        self._install_shortcuts()
+
+    # ---- Keyboard shortcuts ----------------------------------------------
+
+    def _install_shortcuts(self) -> None:
+        """Bind keyboard shortcuts to frequently used actions."""
+        # Ctrl+P  — Pre-Scan
+        sc = QShortcut(QKeySequence("Ctrl+P"), self)
+        sc.activated.connect(lambda: self.prescan_button.click()
+                             if self.prescan_button.isEnabled() else None)
+        self.prescan_button.setToolTip(
+            self.prescan_button.toolTip().replace("</p>",
+            "<br><b>Shortcut:</b> Ctrl+P</p>")
+        )
+
+        # Ctrl+Enter — Start Cataloging
+        sc2 = QShortcut(QKeySequence("Ctrl+Return"), self)
+        sc2.activated.connect(lambda: self.start_button.click()
+                              if self.start_button.isEnabled() else None)
+        self.start_button.setToolTip(
+            self.start_button.toolTip().replace("</p>",
+            "<br><b>Shortcut:</b> Ctrl+Enter</p>")
+        )
+
+        # Ctrl+T — Test Rename
+        sc3 = QShortcut(QKeySequence("Ctrl+T"), self)
+        sc3.activated.connect(lambda: self.test_rename_button.click()
+                              if self.test_rename_button.isEnabled() else None)
+        self.test_rename_button.setToolTip(
+            self.test_rename_button.toolTip().replace("</p>",
+            "<br><b>Shortcut:</b> Ctrl+T</p>")
+        )
+
+        # Ctrl+D — Detect Duplicates
+        sc4 = QShortcut(QKeySequence("Ctrl+D"), self)
+        sc4.activated.connect(lambda: self.detect_dupes_button.click()
+                              if self.detect_dupes_button.isEnabled() else None)
+        self.detect_dupes_button.setToolTip(
+            self.detect_dupes_button.toolTip().replace("</p>",
+            "<br><b>Shortcut:</b> Ctrl+D</p>")
+        )
+
+        # Ctrl+Z — Undo Last Operation
+        sc5 = QShortcut(QKeySequence("Ctrl+Z"), self)
+        sc5.activated.connect(lambda: self.undo_button.click()
+                              if self.undo_button.isEnabled() else None)
+        self.undo_button.setToolTip(
+            self.undo_button.toolTip().replace("</p>",
+            "<br><b>Shortcut:</b> Ctrl+Z</p>")
+        )
 
     # ---- Logging setup ---------------------------------------------------
 
@@ -534,6 +607,8 @@ class MainWindow(QMainWindow):
         if CAMERA_ICON.exists():
             self.setWindowIcon(QIcon(str(CAMERA_ICON)))
         self.resize(880, 640)
+
+        self._build_menu_bar()
 
         central = QWidget(self)
         central.setStyleSheet("background-color: #ffffff;")
@@ -563,6 +638,17 @@ class MainWindow(QMainWindow):
         # header so live-run feedback is co-located with the log scroll.
         root.addLayout(self._build_report_buttons_row())
         root.addWidget(self._build_rename_section())
+
+        # Thick separator between template-building (above) and the
+        # destination/copy/move/delete execution zone (below).
+        thick_sep = QFrame()
+        thick_sep.setFrameShape(QFrame.Shape.HLine)
+        thick_sep.setFrameShadow(QFrame.Shadow.Sunken)
+        thick_sep.setStyleSheet(
+            "QFrame { border: none; background-color: #2f5b9a;"
+            " min-height: 3px; max-height: 3px; }"
+        )
+        root.addWidget(thick_sep)
         # Destination Folder + Folder Layout block sits immediately
         # before the Copy/Move/Delete/Undo row so the destination-side
         # controls read top-down as "where" → "how (layout)" → "do".
@@ -571,26 +657,289 @@ class MainWindow(QMainWindow):
             "destination_folder_edit",
             self._on_browse_destination_folder,
         ))
+
+        # Read-only label showing where non-keepers will be moved
+        self.holding_folder_label = QLabel("")
+        self.holding_folder_label.setStyleSheet(
+            "color: #666666; font-size: 11px; padding-left: 2px;"
+        )
+        self.holding_folder_label.setVisible(False)
+        root.addWidget(self.holding_folder_label)
+
         root.addWidget(self._build_folder_layout_section())
-        root.addLayout(self._build_v3_action_buttons_row())
+        root.addLayout(self._build_dupe_detection_row())
+        root.addLayout(self._build_process_buttons_row())
+
+        # Thick separator between process buttons and the log panel.
+        thick_sep2 = QFrame()
+        thick_sep2.setFrameShape(QFrame.Shape.HLine)
+        thick_sep2.setFrameShadow(QFrame.Shadow.Sunken)
+        thick_sep2.setStyleSheet(
+            "QFrame { border: none; background-color: #2f5b9a;"
+            " min-height: 3px; max-height: 3px; }"
+        )
+        root.addWidget(thick_sep2)
+
         root.addLayout(self._build_log_header_row())
         root.addWidget(self._build_log_panel(), 1)
+
+    def _build_menu_bar(self) -> None:
+        """Create a standard menu bar with File and Help menus."""
+        menu_bar = self.menuBar()
+        menu_bar.setStyleSheet(
+            "QMenuBar { background-color: #f0f0f0; border-bottom: 1px solid #d0d7e2; }"
+            "QMenuBar::item:selected { background-color: #2f5b9a; color: white; }"
+            "QMenu { background-color: #ffffff; border: 1px solid #d0d7e2; }"
+            "QMenu::item:selected { background-color: #2f5b9a; color: white; }"
+        )
+
+        # ---- File menu ----
+        file_menu = menu_bar.addMenu("&File")
+
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcut("Alt+F4")
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        # ---- Help menu ----
+        help_menu = menu_bar.addMenu("&Help")
+
+        quick_ref_action = QAction("&Quick Reference", self)
+        quick_ref_action.setShortcut("F1")
+        quick_ref_action.triggered.connect(self._on_show_quick_reference)
+        help_menu.addAction(quick_ref_action)
+
+        full_docs_action = QAction("&Full Documentation", self)
+        full_docs_action.triggered.connect(self._on_open_full_docs)
+        help_menu.addAction(full_docs_action)
+
+        help_menu.addSeparator()
+
+        about_action = QAction("&About", self)
+        about_action.triggered.connect(self._on_show_about)
+        help_menu.addAction(about_action)
+
+    def _on_show_quick_reference(self) -> None:
+        """Show the in-app quick-reference dialog with tabbed content."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"PhotoCatalog {APP_VERSION} — Quick Reference")
+        dlg.resize(620, 500)
+        layout = QVBoxLayout(dlg)
+
+        tabs = QTabWidget()
+        tabs.setStyleSheet(
+            "QTabWidget::pane { border: 1px solid #d0d7e2; }"
+            "QTabBar::tab { padding: 6px 16px; }"
+            "QTabBar::tab:selected { background: #2f5b9a; color: white;"
+            " font-weight: bold; }"
+        )
+
+        # ---- Workflow tab ----
+        workflow_text = QTextEdit()
+        workflow_text.setReadOnly(True)
+        workflow_text.setHtml(self._workflow_html())
+        tabs.addTab(workflow_text, "Workflow")
+
+        # ---- Rename Variables tab ----
+        rename_text = QTextEdit()
+        rename_text.setReadOnly(True)
+        rename_text.setHtml(self._rename_variables_html())
+        tabs.addTab(rename_text, "Rename Variables")
+
+        # ---- Folder Layout tab ----
+        layout_text = QTextEdit()
+        layout_text.setReadOnly(True)
+        layout_text.setHtml(self._folder_layout_html())
+        tabs.addTab(layout_text, "Folder Layout")
+
+        # ---- Button Summary tab ----
+        buttons_text = QTextEdit()
+        buttons_text.setReadOnly(True)
+        buttons_text.setHtml(self._button_summary_html())
+        tabs.addTab(buttons_text, "Button Summary")
+
+        layout.addWidget(tabs)
+
+        # Link to full docs
+        full_docs_row = QHBoxLayout()
+        full_docs_row.addStretch(1)
+        full_docs_link = QPushButton("Open Full Documentation")
+        full_docs_link.setStyleSheet(BLUE_BUTTON_STYLE)
+        full_docs_link.clicked.connect(self._on_open_full_docs)
+        full_docs_link.clicked.connect(dlg.accept)
+        full_docs_row.addWidget(full_docs_link)
+
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(80)
+        close_btn.clicked.connect(dlg.accept)
+        full_docs_row.addWidget(close_btn)
+        layout.addLayout(full_docs_row)
+
+        dlg.exec()
+
+    @staticmethod
+    def _workflow_html() -> str:
+        return """
+        <h2 style="color:#2f5b9a;">Process Workflow</h2>
+        <p>PhotoCatalog processes photos in a pipeline. Each step builds on the
+        output of the previous one.</p>
+        <table cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%;">
+        <tr style="background:#2f5b9a; color:white;">
+          <th align="left">Step</th><th align="left">Action</th><th align="left">Enables</th></tr>
+        <tr style="background:#f5f5f5;">
+          <td><b>1</b></td><td>Select Photo Folder + Report Folder</td>
+          <td>Pre-Scan Folder</td></tr>
+        <tr><td><b>2</b></td><td>Pre-Scan Folder</td>
+          <td>Start Cataloging Process</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td><b>3</b></td><td>Start Cataloging Process</td>
+          <td>Open Report, Open Log, Detect Duplicates, Copy/Move/Delete/Undo</td></tr>
+        <tr><td><b>4</b></td><td>Open Catalog Report / Open Process Log</td>
+          <td>Review results</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td><b>5</b></td><td>Rename Template (optional)</td>
+          <td>Populate File_RenameName column</td></tr>
+        <tr><td><b>6</b></td><td>Set Destination Folder + Layout</td>
+          <td>Required for Copy/Move/Delete</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td><b>7</b></td><td>Detect Duplicates (if not done during catalog)</td>
+          <td>Required for Move/Delete non-keepers</td></tr>
+        <tr><td><b>8</b></td><td>Copy to Destination</td>
+          <td>Copies files to destination folder structure</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td><b>9</b></td><td>Move / Delete non-keepers</td>
+          <td>Manage duplicate files</td></tr>
+        <tr><td><b>10</b></td><td>Undo Last Operation</td>
+          <td>Reverses last Copy/Move/Delete</td></tr>
+        </table>
+        <p style="color:#555; margin-top:12px;"><i>Press F1 at any time to open this reference.</i></p>
+        """
+
+    @staticmethod
+    def _rename_variables_html() -> str:
+        return """
+        <h2 style="color:#2f5b9a;">Rename Template Variables</h2>
+        <p>Use these variables in the Rename File Name Template field:</p>
+        <table cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%;">
+        <tr style="background:#2f5b9a; color:white;">
+          <th align="left">Variable</th><th align="left">Description</th><th align="left">Example</th></tr>
+        <tr style="background:#f5f5f5;">
+          <td><code>%File_Name%</code></td><td>Original filename (no extension)</td><td>IMG_1234</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td><code>%Date_YY%</code></td><td>2-digit year</td><td>26</td></tr>
+        <tr><td><code>%Date_YYYY%</code></td><td>4-digit year</td><td>2026</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td><code>%Date_MM%</code></td><td>2-digit month</td><td>04</td></tr>
+        <tr><td><code>%Date_DD%</code></td><td>2-digit day</td><td>09</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td><code>%Camera_Make%</code></td><td>Camera manufacturer</td><td>Canon</td></tr>
+        </table>
+        <p style="margin-top:12px;"><b>Example template:</b><br>
+        <code>%Date_YYYY%-%Date_MM%-%Date_DD%_%Camera_Make%_%File_Name%</code><br>
+        <b>Produces:</b> <code>2026-04-09_Canon_IMG_1234.jpg</code></p>
+        """
+
+    @staticmethod
+    def _folder_layout_html() -> str:
+        return """
+        <h2 style="color:#2f5b9a;">Destination Folder Layout</h2>
+        <p>Configure the subfolder structure for copied photos. Check/uncheck
+        levels and pick a format from each dropdown.</p>
+        <table cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%;">
+        <tr style="background:#2f5b9a; color:white;">
+          <th align="left">Level</th><th align="left">Format Options</th><th align="left">Example</th></tr>
+        <tr style="background:#f5f5f5;">
+          <td>Year</td><td>YYYY or YY</td><td>2019 or 19</td></tr>
+        <tr><td>Month</td><td>MM, MM - MonthName, or MonthName</td><td>06, 06 - June, or June</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td>Day</td><td>DD</td><td>15</td></tr>
+        </table>
+        <p style="margin-top:12px;">The <b>Example</b> preview below the
+        checkboxes updates live as you change settings, showing what the
+        folder path would look like for a sample date.</p>
+        <p><b>Duplicate Detection Modes:</b></p>
+        <table cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%;">
+        <tr style="background:#2f5b9a; color:white;">
+          <th align="left">Mode</th><th align="left">Description</th><th align="left">Speed</th></tr>
+        <tr style="background:#f5f5f5;">
+          <td>None</td><td>No duplicate detection</td><td>—</td></tr>
+        <tr><td>Filename + Size</td><td>Groups files with same name and size</td><td>Fast</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td>MD5 Hash</td><td>Byte-exact checksum matching</td><td>Slower</td></tr>
+        </table>
+        """
+
+    @staticmethod
+    def _button_summary_html() -> str:
+        return """
+        <h2 style="color:#2f5b9a;">Button Enable Summary</h2>
+        <p>Each button enables when its prerequisites are met:</p>
+        <table cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%;">
+        <tr style="background:#2f5b9a; color:white;">
+          <th align="left">Button</th><th align="left">Enabled When</th></tr>
+        <tr style="background:#f5f5f5;">
+          <td>Pre-Scan Folder</td><td>Photo Folder + Report Folder set</td></tr>
+        <tr><td>Start Cataloging</td><td>Pre-scan completed for current folder</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td>Open Catalog Report</td><td>Cataloging completed successfully</td></tr>
+        <tr><td>Open Process Log</td><td>Cataloging completed (success, failure, or cancel)</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td>Test Rename String</td><td>Workbook exists + template entered</td></tr>
+        <tr><td>Build Renames</td><td>Workbook exists + Test Rename passed</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td>Detect Duplicates</td><td>Workbook exists</td></tr>
+        <tr><td>Copy to Destination</td><td>Workbook exists + Destination Folder set</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td>Move non-keepers</td><td>Workbook + Destination + dupes detected</td></tr>
+        <tr><td>Delete non-keepers</td><td>Workbook + Destination + dupes detected</td></tr>
+        <tr style="background:#f5f5f5;">
+          <td>Undo Last Operation</td><td>Workbook + Destination + journal exists</td></tr>
+        </table>
+        """
+
+    def _on_open_full_docs(self) -> None:
+        """Open the full HTML documentation in the default browser."""
+        if HELP_FILE.exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(HELP_FILE)))
+        else:
+            QMessageBox.information(
+                self, "Documentation not found",
+                f"Could not find help file at:\n{HELP_FILE}\n\n"
+                "This file is included in the installation package."
+            )
+
+    def _on_show_about(self) -> None:
+        """Show the About dialog."""
+        QMessageBox.about(
+            self,
+            f"About {APP_TITLE}",
+            f"<h3>{APP_TITLE}</h3>"
+            f"<p>{APP_VERSION} \u2014 {APP_RELEASE_DATE}</p>"
+            "<p>A desktop application for cataloging, organizing, and "
+            "managing photo libraries.</p>"
+            "<p>Built with Python and PyQt6.</p>"
+            "<p>Built with Claude</p>"
+            '<p><a href="https://github.com/dkrist/PhotoCatalog">'
+            "github.com/dkrist/PhotoCatalog</a></p>"
+        )
 
     def _build_header(self) -> QWidget:
         header = QFrame()
         header.setStyleSheet(
-            "QFrame { background-color: #2f5b9a; border: 1px solid #1e3f6f; }"
+            "QFrame { background-color: #2f5b9a; border: none; }"
         )
         header.setFixedHeight(70)
         layout = QHBoxLayout(header)
         layout.setContentsMargins(14, 8, 14, 8)
 
-        # Camera icon
+        # Camera icon (white SVG for the blue header)
         icon_label = QLabel()
         icon_label.setFixedSize(52, 52)
-        if CAMERA_ICON.exists():
+        icon_label.setStyleSheet("border: none; background: transparent;")
+        _icon_path = CAMERA_ICON_WHITE if CAMERA_ICON_WHITE.exists() else CAMERA_ICON
+        if _icon_path.exists():
             icon_label.setPixmap(
-                QPixmap(str(CAMERA_ICON)).scaled(
+                QPixmap(str(_icon_path)).scaled(
                     52, 52,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
@@ -600,7 +949,7 @@ class MainWindow(QMainWindow):
 
         # Title
         title = QLabel(APP_TITLE)
-        title.setStyleSheet("color: #ffffff; font-size: 22pt; font-weight: bold;")
+        title.setStyleSheet("color: #ffffff; font-size: 22pt; font-weight: bold; border: none; background: transparent;")
         layout.addWidget(title)
         layout.addStretch(1)
 
@@ -678,13 +1027,16 @@ class MainWindow(QMainWindow):
         prescan.setEnabled(False)
         prescan.clicked.connect(self._on_prescan)
         self.prescan_button = prescan
+        prescan.setToolTip(
+            '<p style="max-width:320px;">Quick filesystem scan of the photo folder. Reports file counts by type so you can verify contents before running a full catalog.</p>'
+        )
         row.addWidget(prescan)
 
         # Start Cataloging — green, disabled until pre-scan completes.
         start = QPushButton("Start Cataloging Process")
         start.setStyleSheet(
             "QPushButton { background-color: #4f8a3d; color: white; font-weight: bold;"
-            " padding: 6px 14px; border: 1px solid #2f5d23; }"
+            " padding: 6px 14px; border: 1px solid #2f5d23; border-radius: 6px; }"
             "QPushButton:disabled { background-color: #9ec589; }"
         )
         start.setFixedHeight(30)
@@ -692,6 +1044,9 @@ class MainWindow(QMainWindow):
         start.setEnabled(False)
         start.clicked.connect(self._on_start_cataloging)
         self.start_button = start
+        start.setToolTip(
+            '<p style="max-width:320px;">Run the full cataloging pipeline: extract EXIF/XMP metadata from every photo and produce an Excel workbook. Requires a successful pre-scan first.</p>'
+        )
         row.addWidget(start)
 
         row.addStretch(1)
@@ -739,12 +1094,19 @@ class MainWindow(QMainWindow):
         self.open_report_button.setEnabled(False)
         self.open_report_button.setStyleSheet(BLUE_BUTTON_STYLE)
         self.open_report_button.clicked.connect(self._on_open_report)
+        self.open_report_button.setToolTip(
+            '<p style="max-width:320px;">Open the generated Excel workbook in your default spreadsheet application.</p>'
+        )
         row.addWidget(self.open_report_button)
 
         self.open_log_button = QPushButton("Open Process Log")
         self.open_log_button.setFixedWidth(160)
+        self.open_log_button.setEnabled(False)
         self.open_log_button.setStyleSheet(BLUE_BUTTON_STYLE)
         self.open_log_button.clicked.connect(self._on_open_log)
+        self.open_log_button.setToolTip(
+            '<p style="max-width:320px;">Open the process log file for this session. Captures every pipeline step including warnings and errors.</p>'
+        )
         row.addWidget(self.open_log_button)
 
         row.addStretch(1)
@@ -752,16 +1114,15 @@ class MainWindow(QMainWindow):
 
     def _build_rename_section(self) -> QWidget:
         """
-        Rename File Name Template section — sits between the Open
-        Report/Log row and the Process Log panel.
+        Rename File Name Template section with a clickable button
+        palette so the user can build templates without memorising
+        %Variable% token syntax.
 
-        Contents:
-          * Section label + a one-line help blurb listing valid
-            %Variable% tokens
-          * Single-line text box for the template string
-          * Row of two buttons: Test Rename String + Build Renames
-            for all Photos (both disabled until a catalog report is
-            available and the user has typed something in the box)
+        Layout (top to bottom):
+          1. Section label
+          2. Editable text box (power users can still type directly)
+          3. Button palette: Date | Camera | File | Separators | Clear
+          4. Action buttons: Test Rename String + Build Renames
         """
         wrap = QWidget()
         layout = QVBoxLayout(wrap)
@@ -772,35 +1133,146 @@ class MainWindow(QMainWindow):
         label.setStyleSheet("color: #2f5b9a; font-weight: bold;")
         layout.addWidget(label)
 
-        # Show valid variables inline so the user doesn't need a
-        # separate cheat sheet. Tokens are small, plain grey.
-        help_text = "Variables: " + "  ".join(RENAME_VARIABLES.keys())
-        help_label = QLabel(help_text)
-        help_label.setStyleSheet("color: #555555; font-size: 9pt;")
-        help_label.setWordWrap(True)
-        layout.addWidget(help_label)
+        note = QLabel("Click buttons to build your template. "
+                       "The file extension is added automatically.")
+        note.setStyleSheet("color: #555555; font-size: 9pt;")
+        note.setWordWrap(True)
+        layout.addWidget(note)
 
+        # ---- Template text box -------------------------------------------
         self.rename_template_edit = QLineEdit()
+        self.rename_template_edit.setStyleSheet(
+            "QLineEdit { border: 2px solid #333333; border-radius: 4px;"
+            " padding: 3px 6px; font-size: 10pt; }"
+            "QLineEdit:focus { border: 2px solid #2f5b9a; }"
+        )
         self.rename_template_edit.setPlaceholderText(
-            "e.g.  %Date_YYYY%-%Date_MM%-%Date_DD%_%Camera_Make%_%File_Name%%File_Extension%"
+            "e.g.  %Date_YYYY%-%Date_MM%-%Date_DD%_%Camera_Make%_%File_Name%"
         )
         self.rename_template_edit.setMinimumHeight(26)
         self.rename_template_edit.textChanged.connect(self._on_rename_template_changed)
         layout.addWidget(self.rename_template_edit)
 
+        # ---- Button palette ----------------------------------------------
+        # Small pill-style buttons organised in a single flow row.
+        PILL = (
+            "QPushButton { background-color: #e8eef6; color: #1f3a66;"
+            " font-weight: bold; font-size: 9pt; padding: 3px 10px;"
+            " border: 1px solid #b0c4de; border-radius: 10px; }"
+            "QPushButton:hover { background-color: #d0ddef; }"
+            "QPushButton:pressed { background-color: #b8cce2; }"
+        )
+        SEP_PILL = (
+            "QPushButton { background-color: #f0e6d6; color: #6b4c1e;"
+            " font-weight: bold; font-size: 9pt; padding: 3px 10px;"
+            " border: 1px solid #d4c4a8; border-radius: 10px; }"
+            "QPushButton:hover { background-color: #e6d8c2; }"
+            "QPushButton:pressed { background-color: #dac8ae; }"
+        )
+        CLEAR_PILL = (
+            "QPushButton { background-color: #f6e8e8; color: #8b2020;"
+            " font-weight: bold; font-size: 9pt; padding: 3px 10px;"
+            " border: 1px solid #deb0b0; border-radius: 10px; }"
+            "QPushButton:hover { background-color: #edd0d0; }"
+            "QPushButton:pressed { background-color: #e0b8b8; }"
+        )
+
+        palette = QHBoxLayout()
+        palette.setSpacing(4)
+
+        # Date group
+        date_label = QLabel("Date:")
+        date_label.setStyleSheet("color: #2f5b9a; font-weight: bold; font-size: 9pt;")
+        palette.addWidget(date_label)
+        for short, token in [("YYYY", "%Date_YYYY%"), ("YY", "%Date_YY%"),
+                              ("MM", "%Date_MM%"), ("DD", "%Date_DD%")]:
+            btn = QPushButton(short)
+            btn.setStyleSheet(PILL)
+            btn.setToolTip(f'<p style="max-width:240px;">Insert <b>{token}</b> at cursor position</p>')
+            btn.clicked.connect(lambda checked, t=token: self._insert_template_token(t))
+            palette.addWidget(btn)
+
+        palette.addSpacing(8)
+
+        # Camera group
+        cam_label = QLabel("Camera:")
+        cam_label.setStyleSheet("color: #2f5b9a; font-weight: bold; font-size: 9pt;")
+        palette.addWidget(cam_label)
+        for short, token in [("Make", "%Camera_Make%")]:
+            btn = QPushButton(short)
+            btn.setStyleSheet(PILL)
+            btn.setToolTip(f'<p style="max-width:240px;">Insert <b>{token}</b> at cursor position</p>')
+            btn.clicked.connect(lambda checked, t=token: self._insert_template_token(t))
+            palette.addWidget(btn)
+
+        palette.addSpacing(8)
+
+        # File group
+        file_label = QLabel("File:")
+        file_label.setStyleSheet("color: #2f5b9a; font-weight: bold; font-size: 9pt;")
+        palette.addWidget(file_label)
+        for short, token in [("Name", "%File_Name%")]:
+            btn = QPushButton(short)
+            btn.setStyleSheet(PILL)
+            btn.setToolTip(f'<p style="max-width:240px;">Insert <b>{token}</b> at cursor position</p>')
+            btn.clicked.connect(lambda checked, t=token: self._insert_template_token(t))
+            palette.addWidget(btn)
+
+        palette.addSpacing(8)
+
+        # Separator group
+        sep_label = QLabel("Sep:")
+        sep_label.setStyleSheet("color: #6b4c1e; font-weight: bold; font-size: 9pt;")
+        palette.addWidget(sep_label)
+        for display, char in [("_", "_"), ("Spc", " "), ("-", "-"), (".", ".")]:
+            btn = QPushButton(display)
+            btn.setStyleSheet(SEP_PILL)
+            btn.setFixedWidth(40)
+            btn.clicked.connect(lambda checked, c=char: self._insert_template_token(c))
+            palette.addWidget(btn)
+
+        palette.addSpacing(12)
+
+        # Clear button
+        clear_btn = QPushButton("Clear")
+        clear_btn.setStyleSheet(CLEAR_PILL)
+        clear_btn.setToolTip('<p style="max-width:200px;">Clear the entire template</p>')
+        clear_btn.clicked.connect(lambda: self.rename_template_edit.clear())
+        palette.addWidget(clear_btn)
+
+        palette.addStretch(1)
+        layout.addLayout(palette)
+
+        # ---- Action buttons row ------------------------------------------
         button_row = QHBoxLayout()
         self.test_rename_button = QPushButton("Test Rename String")
         self.test_rename_button.setFixedWidth(180)
         self.test_rename_button.setStyleSheet(BLUE_BUTTON_STYLE)
         self.test_rename_button.setEnabled(False)
         self.test_rename_button.clicked.connect(self._on_test_rename)
+        self.test_rename_button.setToolTip(
+            '<p style="max-width:320px;">Preview the rename template against the first few photos in the workbook so you can verify the output format.</p>'
+        )
         button_row.addWidget(self.test_rename_button)
+
+        # Inline warning label — visible when template exists but
+        # hasn't been tested yet; hides once Test passes.
+        self.rename_warning_label = QLabel("")
+        self.rename_warning_label.setStyleSheet(
+            "color: #b8860b; font-weight: bold; font-size: 9pt;"
+            " padding: 0 8px;"
+        )
+        self.rename_warning_label.setVisible(False)
+        button_row.addWidget(self.rename_warning_label)
 
         self.build_rename_button = QPushButton("Build Renames for all Photos")
         self.build_rename_button.setFixedWidth(230)
         self.build_rename_button.setStyleSheet(BLUE_BUTTON_STYLE)
         self.build_rename_button.setEnabled(False)
         self.build_rename_button.clicked.connect(self._on_build_renames)
+        self.build_rename_button.setToolTip(
+            '<p style="max-width:320px;">Populate the File_RenameName column for every row in the workbook using the template above. Generates name strings only &mdash; no files are moved or renamed on disk.</p>'
+        )
         button_row.addWidget(self.build_rename_button)
 
         button_row.addStretch(1)
@@ -808,14 +1280,44 @@ class MainWindow(QMainWindow):
 
         return wrap
 
+    def _update_rename_warning_label(self) -> None:
+        """Show/hide the inline warning between Test and Build buttons."""
+        if not hasattr(self, "rename_warning_label"):
+            return
+        template = self.rename_template_edit.text().strip()
+        if template and not self._test_rename_passed:
+            self.rename_warning_label.setText(
+                "\u26a0 Run Test first to verify your template"
+            )
+            self.rename_warning_label.setVisible(True)
+        else:
+            self.rename_warning_label.setVisible(False)
+
+    def _insert_template_token(self, token: str) -> None:
+        """Insert *token* at the current cursor position in the rename
+        template text box, then return focus to the text box so the
+        user can keep building without an extra click."""
+        edit = self.rename_template_edit
+        pos = edit.cursorPosition()
+        current = edit.text()
+        edit.setText(current[:pos] + token + current[pos:])
+        edit.setCursorPosition(pos + len(token))
+        edit.setFocus()
+        self._update_rename_warning_label()
+
     # ---- v3 UI sections --------------------------------------------------
 
     def _build_folder_layout_section(self) -> QWidget:
         """
         Destination folder-layout picker (three enable checkboxes + a
-        format radio group for each). Levels always render Year \u2192
+        format combo dropdown for each). Levels always render Year \u2192
         Month \u2192 Day in that order so the UI only exposes the
         format choices, not the ordering.
+
+        The combo dropdown replaces the old QRadioButton groups \u2014
+        selected values are always visible as text, and the dropdown
+        disables (grayed out) when its level checkbox is unchecked,
+        making the active/inactive state obvious at a glance.
 
         A live example label at the bottom renders June 15, 2019 under
         whatever combination the user has currently selected so they
@@ -830,94 +1332,115 @@ class MainWindow(QMainWindow):
         label.setStyleSheet("color: #2f5b9a; font-weight: bold;")
         outer.addWidget(label)
 
+        # High-contrast checkbox style: checked = blue fill with white
+        # checkmark; unchecked = clear bordered square. Both states are
+        # visually distinct at any size so the user can tell at a glance
+        # which levels are active.
+        # Path to the white-checkmark SVG — Qt QSS url() needs
+        # forward slashes even on Windows.
+        _check_path = str(CHECKMARK_ICON).replace("\\", "/")
+        checkbox_style = (
+            "QCheckBox::indicator { width: 16px; height: 16px; }"
+            "QCheckBox::indicator:unchecked {"
+            "  border: 2px solid #8ea6c6; border-radius: 3px;"
+            "  background-color: #ffffff; }"
+            "QCheckBox::indicator:unchecked:hover {"
+            "  border: 2px solid #2f5b9a; }"
+            "QCheckBox::indicator:checked {"
+            "  border: 2px solid #2f5b9a; border-radius: 3px;"
+            "  background-color: #2f5b9a;"
+            f"  image: url({_check_path}); }}"
+        )
+
         grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(4)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(6)
+        # Pin column 0 (checkbox labels) to just enough width so the
+        # format combos in column 1 sit close beside them rather than
+        # floating all the way to the right edge of the window.
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 0)
+        grid.setColumnStretch(2, 1)   # absorb extra width on the right
+        grid.setColumnMinimumWidth(0, 130)
 
         # --- Year row -----------------------------------------------------
         self.year_checkbox = QCheckBox("Year folder")
+        self.year_checkbox.setStyleSheet(checkbox_style)
         self.year_checkbox.toggled.connect(self._on_folder_layout_changed)
         grid.addWidget(self.year_checkbox, 0, 0)
-        self.year_format_group = QButtonGroup(self)
-        self.year_format_radios: dict = {}
-        for col, fmt in enumerate(YEAR_FORMATS, start=1):
-            rb = QRadioButton(fmt)
-            rb.toggled.connect(self._on_folder_layout_changed)
-            self.year_format_group.addButton(rb)
-            self.year_format_radios[fmt] = rb
-            grid.addWidget(rb, 0, col)
+
+        self.year_format_combo = QComboBox()
+        for fmt in YEAR_FORMATS:
+            self.year_format_combo.addItem(fmt, fmt)
+        self.year_format_combo.currentIndexChanged.connect(
+            self._on_folder_layout_changed,
+        )
+        self.year_format_combo.setFixedWidth(180)
+        grid.addWidget(self.year_format_combo, 0, 1)
 
         # --- Month row ----------------------------------------------------
         self.month_checkbox = QCheckBox("Month folder")
+        self.month_checkbox.setStyleSheet(checkbox_style)
         self.month_checkbox.toggled.connect(self._on_folder_layout_changed)
         grid.addWidget(self.month_checkbox, 1, 0)
-        self.month_format_group = QButtonGroup(self)
-        self.month_format_radios: dict = {}
-        for col, fmt in enumerate(MONTH_FORMATS, start=1):
-            rb = QRadioButton(fmt)
-            rb.toggled.connect(self._on_folder_layout_changed)
-            self.month_format_group.addButton(rb)
-            self.month_format_radios[fmt] = rb
-            grid.addWidget(rb, 1, col)
+
+        self.month_format_combo = QComboBox()
+        for fmt in MONTH_FORMATS:
+            self.month_format_combo.addItem(fmt, fmt)
+        self.month_format_combo.currentIndexChanged.connect(
+            self._on_folder_layout_changed,
+        )
+        self.month_format_combo.setFixedWidth(180)
+        grid.addWidget(self.month_format_combo, 1, 1)
 
         # --- Day row ------------------------------------------------------
         self.day_checkbox = QCheckBox("Day folder")
+        self.day_checkbox.setStyleSheet(checkbox_style)
         self.day_checkbox.toggled.connect(self._on_folder_layout_changed)
         grid.addWidget(self.day_checkbox, 2, 0)
-        self.day_format_group = QButtonGroup(self)
-        self.day_format_radios: dict = {}
-        for col, fmt in enumerate(DAY_FORMATS, start=1):
-            rb = QRadioButton(fmt)
-            rb.toggled.connect(self._on_folder_layout_changed)
-            self.day_format_group.addButton(rb)
-            self.day_format_radios[fmt] = rb
-            grid.addWidget(rb, 2, col)
+
+        self.day_format_combo = QComboBox()
+        for fmt in DAY_FORMATS:
+            self.day_format_combo.addItem(fmt, fmt)
+        self.day_format_combo.currentIndexChanged.connect(
+            self._on_folder_layout_changed,
+        )
+        self.day_format_combo.setFixedWidth(180)
+        grid.addWidget(self.day_format_combo, 2, 1)
 
         outer.addLayout(grid)
 
-        # Live preview label — updated every time the user flips a
-        # checkbox/radio. Seeded with a default so the label isn't blank
-        # before any interaction.
+        # Live preview label \u2014 updated every time the user flips a
+        # checkbox or selects a format. Seeded with a default so the
+        # label isn\u2019t blank before any interaction. Bold + larger size
+        # so it stands out as actionable feedback.
         self.folder_layout_preview = QLabel("Example: 2019\\06 - June")
-        self.folder_layout_preview.setStyleSheet("color: #555555; font-style: italic;")
+        self.folder_layout_preview.setStyleSheet(
+            "color: #2f5b9a; font-weight: bold; font-size: 11pt;"
+        )
         outer.addWidget(self.folder_layout_preview)
 
         return wrap
 
-    # NOTE: _build_dupe_mode_row was removed in 3.0.1 — the Duplicate
-    # Detection combo it used to build is now created inline by
-    # _build_v3_action_buttons_row so it sits directly to the left of
-    # the "Detect Duplicates" button that consumes its value.
+    # NOTE: _build_v3_action_buttons_row was split into
+    # _build_dupe_detection_row + _build_process_buttons_row so the
+    # five process buttons sit on their own row below Duplicate Detection.
 
-    def _build_v3_action_buttons_row(self) -> QHBoxLayout:
+    def _build_dupe_detection_row(self) -> QHBoxLayout:
         """
-        Row of destination-side action buttons: [Duplicate Detection
-        combo] [Detect Duplicates] [Copy to Destination] [Move non-keepers]
-        [Delete non-keepers] [Undo Last Operation].
-
-        The Duplicate Detection combo lives on this row (rather than up
-        with the cataloging controls) because it's the input the
-        "Detect Duplicates" button reads at click time \u2014 keeping
-        them adjacent makes the dependency obvious. Start Cataloging
-        also reads this same combo, just from a different code path.
-
-        All action buttons are disabled until a workbook exists on disk.
-        Move and Delete additionally require a dupe-detection pass to
-        have populated File_DupeKeep \u2014 that's enforced at click time
-        so the user sees a helpful message if they try to use them
-        without having detected duplicates.
+        Duplicate Detection controls: mode combo + Hash-all checkbox.
+        Sits between the Folder Layout section and the process-action
+        buttons so the logical flow reads top-down as
+        "where \u2192 layout \u2192 dupe settings \u2192 actions".
         """
         row = QHBoxLayout()
         row.setSpacing(8)
 
-        # --- Duplicate Detection combo (input for the button to its right)
         dupe_label = QLabel("Duplicate Detection:")
         dupe_label.setStyleSheet("color: #2f5b9a; font-weight: bold;")
         row.addWidget(dupe_label)
 
         self.dupe_mode_combo = QComboBox()
-        # (display, setting_value) pairs. Keep the setting_value in sync
-        # with _VALID_DUPE_MODES in settings.py.
         for display, value in (
             ("None", "none"),
             ("Filename + Size (fast)", "filename_size"),
@@ -927,49 +1450,59 @@ class MainWindow(QMainWindow):
         self.dupe_mode_combo.currentIndexChanged.connect(self._on_dupe_mode_changed)
         row.addWidget(self.dupe_mode_combo)
 
-        # "Hash all files" opt-out for the smart-hash optimization.
-        # Default OFF (= optimization ON), because skipping size-unique
-        # files saves 80–95% of MD5 I/O on a typical photo library
-        # without affecting correctness. Tick this only when you want
-        # the File_Hash column populated for every row (e.g. as a
-        # standalone checksum independent of duplicate detection).
-        # Greyed out unless MD5 Hash mode is currently selected, since
-        # the flag has no effect for None / Filename+Size modes.
         self.always_hash_checkbox = QCheckBox("Hash all files")
         self.always_hash_checkbox.setToolTip(
+            '<p style="max-width:320px;">'
             "When unchecked (default), MD5 mode skips files whose size "
-            "is unique across the library — they cannot have a "
+            "is unique across the library \u2014 they cannot have a "
             "byte-identical twin so hashing them is wasted I/O. "
             "Tick this to force a full MD5 sweep over every file (much "
             "slower; only useful if you want File_Hash populated for "
             "every row regardless of duplicate detection)."
+            "</p>"
         )
         self.always_hash_checkbox.toggled.connect(self._on_always_hash_toggled)
         row.addWidget(self.always_hash_checkbox)
 
-        # "Detect Duplicates on Existing Workbook" — lets the user add
-        # File_Hash / File_DupeGroup / File_DupeKeep columns to a workbook
-        # produced with dupe_mode="none" without re-scanning the source
-        # tree. Uses whatever mode is currently selected in the combo
-        # immediately to the left (None is rejected at click time).
         self.detect_dupes_button = QPushButton("Detect Duplicates")
         self.detect_dupes_button.setFixedWidth(170)
         self.detect_dupes_button.setStyleSheet(BLUE_BUTTON_STYLE)
         self.detect_dupes_button.setEnabled(False)
         self.detect_dupes_button.setToolTip(
-            "Run duplicate detection against the current workbook using "
-            "the mode selected in the Duplicate Detection combo to the "
-            "left. Useful when the catalog was produced with Duplicate "
-            "Detection = None."
+            '<p style="max-width:320px;">Run duplicate detection against the '
+            'current workbook using the mode selected to the left. Useful when '
+            'the catalog was produced with Duplicate Detection = None.</p>'
         )
         self.detect_dupes_button.clicked.connect(self._on_detect_dupes_on_workbook)
         row.addWidget(self.detect_dupes_button)
+
+        row.addStretch(1)
+        return row
+
+    def _build_process_buttons_row(self) -> QHBoxLayout:
+        """
+        Row of four process-action buttons that operate on the
+        workbook / destination folder:
+
+          [Copy to Destination] [Move non-keepers]
+          [Delete non-keepers] [Undo Last Operation]
+
+        All buttons are disabled until a workbook exists on disk.
+        Move and Delete additionally require a dupe-detection pass to
+        have populated File_DupeKeep \u2014 enforced at click time so
+        the user sees a helpful message.
+        """
+        row = QHBoxLayout()
+        row.setSpacing(8)
 
         self.copy_button = QPushButton("Copy to Destination")
         self.copy_button.setFixedWidth(170)
         self.copy_button.setStyleSheet(BLUE_BUTTON_STYLE)
         self.copy_button.setEnabled(False)
         self.copy_button.clicked.connect(self._on_copy_to_destination)
+        self.copy_button.setToolTip(
+            '<p style="max-width:320px;">Re-compute destination paths using current settings, then copy every cataloged photo into the destination folder structure. A rollback journal is written for Undo.</p>'
+        )
         row.addWidget(self.copy_button)
 
         self.move_dupe_button = QPushButton("Move non-keepers")
@@ -977,13 +1510,16 @@ class MainWindow(QMainWindow):
         self.move_dupe_button.setStyleSheet(BLUE_BUTTON_STYLE)
         self.move_dupe_button.setEnabled(False)
         self.move_dupe_button.clicked.connect(self._on_move_non_keepers)
+        self.move_dupe_button.setToolTip(
+            '<p style="max-width:320px;">Move files flagged as non-keepers (File_DupeKeep = FALSE) to a _DupeHolding subfolder for review. Requires duplicate detection to have been run first.</p>'
+        )
         row.addWidget(self.move_dupe_button)
 
         self.delete_dupe_button = QPushButton("Delete non-keepers")
         self.delete_dupe_button.setFixedWidth(170)
         self.delete_dupe_button.setStyleSheet(
             "QPushButton { background-color: #a73a3a; color: white; font-weight: bold;"
-            " border: 1px solid #6f2626; padding: 4px 10px; }"
+            " border: 1px solid #6f2626; padding: 4px 10px; border-radius: 6px; }"
             "QPushButton:hover { background-color: #c14747; }"
             "QPushButton:pressed { background-color: #7f2c2c; }"
             "QPushButton:disabled { background-color: #c6a0a0; color: #f0f0f0;"
@@ -991,6 +1527,9 @@ class MainWindow(QMainWindow):
         )
         self.delete_dupe_button.setEnabled(False)
         self.delete_dupe_button.clicked.connect(self._on_delete_non_keepers)
+        self.delete_dupe_button.setToolTip(
+            '<p style="max-width:320px;">Permanently delete files flagged as non-keepers. Consider using Move non-keepers first to review duplicates before deleting. A rollback journal records what was deleted.</p>'
+        )
         row.addWidget(self.delete_dupe_button)
 
         self.undo_button = QPushButton("Undo Last Operation")
@@ -998,10 +1537,14 @@ class MainWindow(QMainWindow):
         self.undo_button.setStyleSheet(BLUE_BUTTON_STYLE)
         self.undo_button.setEnabled(False)
         self.undo_button.clicked.connect(self._on_undo_last)
+        self.undo_button.setToolTip(
+            '<p style="max-width:320px;">Reverse the most recent Copy, Move, or Delete operation using the rollback journal. Only the last operation can be undone.</p>'
+        )
         row.addWidget(self.undo_button)
 
         row.addStretch(1)
         return row
+
 
     def _build_log_header_row(self) -> QHBoxLayout:
         """
@@ -1017,13 +1560,27 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         row.setSpacing(10)
 
-        label = QLabel("Process Log Messages")
+        label = QLabel("Progress & Activity Log")
         label.setStyleSheet("color: #2f5b9a; font-weight: bold;")
         row.addWidget(label)
 
         # stretch=1 so the bar takes the rest of the row \u2014 important
         # for the indeterminate marquee animation to read smoothly.
         row.addWidget(self._build_progress_bar(), 1)
+
+        # Elapsed-time badge — sits right of the progress bar, hidden
+        # until a long operation starts.
+        self.elapsed_label = QLabel("")
+        self.elapsed_label.setFixedHeight(18)
+        self.elapsed_label.setMinimumWidth(80)
+        self.elapsed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.elapsed_label.setStyleSheet(
+            "background-color: #2f5b9a; color: #ffffff; font-weight: bold;"
+            " font-size: 10px; border-radius: 3px; padding: 0 6px;"
+        )
+        self.elapsed_label.setVisible(False)
+        row.addWidget(self.elapsed_label)
+
         return row
 
     def _build_log_panel(self) -> QTextEdit:
@@ -1043,6 +1600,7 @@ class MainWindow(QMainWindow):
         self.destination_folder_edit.setText(
             self.settings.get("destination_folder", "")
         )
+        self._update_holding_folder_label()
 
         # Rename template — round-trip through settings so the last
         # template the user used is restored on next launch.
@@ -1056,12 +1614,18 @@ class MainWindow(QMainWindow):
         year_fmt = self.settings.get("folder_format_year") or "YYYY"
         month_fmt = self.settings.get("folder_format_month") or "MM - MonthName"
         day_fmt = self.settings.get("folder_format_day") or "DD"
-        if year_fmt in self.year_format_radios:
-            self.year_format_radios[year_fmt].setChecked(True)
-        if month_fmt in self.month_format_radios:
-            self.month_format_radios[month_fmt].setChecked(True)
-        if day_fmt in self.day_format_radios:
-            self.day_format_radios[day_fmt].setChecked(True)
+        # Restore saved format selections into the combo dropdowns.
+        # findData() returns the index whose itemData matches the saved
+        # format string; fall back to index 0 if no match (default fmt).
+        idx = self.year_format_combo.findData(year_fmt)
+        if idx >= 0:
+            self.year_format_combo.setCurrentIndex(idx)
+        idx = self.month_format_combo.findData(month_fmt)
+        if idx >= 0:
+            self.month_format_combo.setCurrentIndex(idx)
+        idx = self.day_format_combo.findData(day_fmt)
+        if idx >= 0:
+            self.day_format_combo.setCurrentIndex(idx)
 
         # Dupe-mode combo: find the setting_value we stored in item data.
         saved_dupe = self.settings.get("dupe_mode") or "none"
@@ -1083,9 +1647,9 @@ class MainWindow(QMainWindow):
             self._on_destination_folder_changed
         )
 
-        # Refresh the layout preview now that radios/checkboxes reflect
-        # the saved state.
-        self._refresh_folder_layout_preview()
+        # Refresh the layout preview and combo enable/disable state now
+        # that combos/checkboxes reflect the saved values.
+        self._on_folder_layout_changed()
         self._update_button_states()
 
     # ---- Button enable/disable logic ------------------------------------
@@ -1096,24 +1660,67 @@ class MainWindow(QMainWindow):
         current_photo = self.photo_folder_edit.text().strip()
         if self.prescanned_folder is not None and current_photo != self.prescanned_folder:
             self.prescanned_folder = None
+            self.prescan_button.setText("Pre-Scan Folder")
+            self.start_button.setText("Start Cataloging Process")
+        self._check_source_equals_destination()
         self._update_button_states()
 
     # ---- v3 small handlers ----------------------------------------------
 
     def _on_destination_folder_changed(self, _text: str) -> None:
         """Destination is only used by the v3 action buttons; just refresh."""
+        self._update_holding_folder_label()
+        self._check_source_equals_destination()
         self._update_button_states()
 
-    def _on_folder_layout_changed(self, _checked: bool = False) -> None:
-        """Any checkbox or radio flip just re-renders the preview."""
+    def _check_source_equals_destination(self) -> None:
+        """Show a warning label if source and destination folders are the same."""
+        src = self.photo_folder_edit.text().strip()
+        dst = self.destination_folder_edit.text().strip()
+        if src and dst:
+            try:
+                same = os.path.normcase(os.path.abspath(src)) == \
+                       os.path.normcase(os.path.abspath(dst))
+            except (ValueError, OSError):
+                same = False
+            if same:
+                if not hasattr(self, "_src_dst_warned") or not self._src_dst_warned:
+                    self._src_dst_warned = True
+                    QMessageBox.warning(
+                        self, "Source = Destination",
+                        "The Destination Folder is the same as the Photo Folder.\n\n"
+                        "Copy to Destination would overwrite original files. "
+                        "Please choose a different destination.",
+                    )
+                return
+        self._src_dst_warned = False
+
+    def _update_holding_folder_label(self) -> None:
+        """Show or hide the non-keepers holding folder path."""
+        dest = self.destination_folder_edit.text().strip()
+        if dest:
+            holding = os.path.join(dest, "_DupeHolding")
+            self.holding_folder_label.setText(
+                f"Non-keepers folder:  {holding}"
+            )
+            self.holding_folder_label.setVisible(True)
+        else:
+            self.holding_folder_label.setVisible(False)
+
+    def _on_folder_layout_changed(self, _value=None) -> None:
+        """Any checkbox toggle or combo selection re-renders the preview
+        and enables/disables the format combo to match its checkbox."""
+        self.year_format_combo.setEnabled(self.year_checkbox.isChecked())
+        self.month_format_combo.setEnabled(self.month_checkbox.isChecked())
+        self.day_format_combo.setEnabled(self.day_checkbox.isChecked())
         self._refresh_folder_layout_preview()
 
     def _on_dupe_mode_changed(self, _index: int) -> None:
-        """Saved on Start; no side effects to apply immediately."""
-        # We intentionally don't persist here — settings are saved when
-        # the user actually kicks off a catalog run so half-edited
-        # combos don't leak back into the config file mid-session.
-        pass
+        """Refresh button states so Detect Duplicates enables/disables
+        immediately when the user switches mode.  Settings are persisted
+        on Start, not here, so half-edited combos don't leak into the
+        config file mid-session."""
+        self._update_button_states()
 
     def _on_always_hash_toggled(self, _checked: bool) -> None:
         """Smart-hash opt-out toggle. Persisted on the next Start/Detect."""
@@ -1123,20 +1730,14 @@ class MainWindow(QMainWindow):
         pass
 
     def _current_folder_config(self) -> FolderConfig:
-        """Read the current checkbox/radio state into a FolderConfig."""
-        def _picked(group: dict, default: str) -> str:
-            for fmt, rb in group.items():
-                if rb.isChecked():
-                    return fmt
-            return default
-
+        """Read the current checkbox/combo state into a FolderConfig."""
         return FolderConfig(
             level_year=self.year_checkbox.isChecked(),
-            format_year=_picked(self.year_format_radios, "YYYY"),
+            format_year=self.year_format_combo.currentData() or "YYYY",
             level_month=self.month_checkbox.isChecked(),
-            format_month=_picked(self.month_format_radios, "MM - MonthName"),
+            format_month=self.month_format_combo.currentData() or "MM - MonthName",
             level_day=self.day_checkbox.isChecked(),
-            format_day=_picked(self.day_format_radios, "DD"),
+            format_day=self.day_format_combo.currentData() or "DD",
         )
 
     def _refresh_folder_layout_preview(self) -> None:
@@ -1227,7 +1828,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "test_rename_button"):
             self.test_rename_button.setEnabled(rename_ok)
         if hasattr(self, "build_rename_button"):
-            self.build_rename_button.setEnabled(rename_ok)
+            # Build is only enabled after Test Rename has passed
+            self.build_rename_button.setEnabled(
+                rename_ok and self._test_rename_passed
+            )
 
         # v3 destination-side buttons:
         #   Copy requires a workbook + a destination folder.
@@ -1242,7 +1846,11 @@ class MainWindow(QMainWindow):
         undo_ok = copy_ok  # click-time validation verifies journal exists
         # Detect Duplicates only needs a workbook — it rewrites the
         # workbook in place, so the Destination Folder isn't relevant.
-        detect_ok = report_exists and not running
+        dupe_mode_set = (
+            hasattr(self, "dupe_mode_combo")
+            and self.dupe_mode_combo.currentData() != "none"
+        )
+        detect_ok = report_exists and dupe_mode_set and not running
         if hasattr(self, "detect_dupes_button"):
             self.detect_dupes_button.setEnabled(detect_ok)
         if hasattr(self, "copy_button"):
@@ -1309,8 +1917,13 @@ class MainWindow(QMainWindow):
         self.progress_bar.setRange(0, 0)   # indeterminate / marquee mode
         self.progress_counter.setText("Scanning…")
         self.prescan_button.setEnabled(False)
+        self.prescan_button.setText("Pre-Scan Folder")
         self.start_button.setEnabled(False)
+        self.start_button.setText("Start Cataloging Process")
         self.prescanned_folder = None
+        # Move focus to the log panel so Qt doesn't auto-focus the rename
+        # template QLineEdit (which selects all its text on Windows).
+        self.log_view.setFocus()
 
         # Spin up the worker on a dedicated QThread.
         self.prescan_thread = QThread(self)
@@ -1330,6 +1943,7 @@ class MainWindow(QMainWindow):
             sig.connect(self.prescan_thread.quit)
         self.prescan_thread.finished.connect(self.prescan_thread.deleteLater)
         self.prescan_thread.finished.connect(self._reset_after_prescan)
+        self._start_elapsed_timer()
         self.prescan_thread.start()
 
     def _on_prescan_progress(self, files_seen: int, folders_seen: int) -> None:
@@ -1343,6 +1957,8 @@ class MainWindow(QMainWindow):
         # was scanned — if the user edits the photo folder later we'll
         # require a fresh scan before Start becomes available again.
         self.prescanned_folder = self.photo_folder_edit.text().strip()
+        self._stop_elapsed_timer()
+        self.prescan_button.setText("Pre-Scan Folder  \u2714")
 
         total_files = result.get("total_files", 0)
         total_folders = result.get("total_folders", 0)
@@ -1353,6 +1969,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_prescan_failed(self, message: str) -> None:
+        self._stop_elapsed_timer()
         self._append_log(f"ERROR: {message}")
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -1360,6 +1977,7 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Pre-scan failed", message)
 
     def _on_prescan_cancelled(self) -> None:
+        self._stop_elapsed_timer()
         self._append_log("Pre-scan cancelled by user.")
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -1413,6 +2031,11 @@ class MainWindow(QMainWindow):
         self.progress_counter.setText("Scanning…")
         self.start_button.setEnabled(False)
         self.open_report_button.setEnabled(False)
+        self.open_log_button.setEnabled(False)
+        # Move focus to the log panel so Qt doesn't auto-focus the rename
+        # template QLineEdit (which selects all its text on Windows).
+        self.log_view.setFocus()
+        self._start_elapsed_timer()
         self._append_log(f"Starting catalog of: {photo_folder}")
         self._append_log(f"Report will be saved to: {final_output_path}")
 
@@ -1520,8 +2143,11 @@ class MainWindow(QMainWindow):
         )
 
     def _on_finished(self, output_path: str, num_rows: int, num_cols: int) -> None:
+        self._stop_elapsed_timer()
+        self.start_button.setText("Start Cataloging Process  ✔")
         self.last_report_path = output_path
         self.open_report_button.setEnabled(True)
+        self.open_log_button.setEnabled(True)
         self._append_log(f"Finished: {num_rows} photos x {num_cols} columns")
         self._append_log(f"Report: {output_path}")
         # A fresh workbook is now on disk, so the Rename buttons can
@@ -1529,11 +2155,15 @@ class MainWindow(QMainWindow):
         self._update_button_states()
 
     def _on_failed(self, message: str) -> None:
+        self._stop_elapsed_timer()
         self._append_log(f"ERROR: {message}")
+        self.open_log_button.setEnabled(True)
         QMessageBox.critical(self, "Cataloging failed", message)
 
     def _on_cancelled(self) -> None:
+        self._stop_elapsed_timer()
         self._append_log("Cancelled by user.")
+        self.open_log_button.setEnabled(True)
 
     def _reset_after_run(self) -> None:
         self.worker = None
@@ -1544,6 +2174,10 @@ class MainWindow(QMainWindow):
 
     def _on_rename_template_changed(self, _text: str) -> None:
         """Refresh rename-button enablement whenever the template edits."""
+        self._test_rename_passed = False
+        self.test_rename_button.setText("Test Rename String")
+        self.build_rename_button.setText("Build Renames for all Photos")
+        self._update_rename_warning_label()
         self._update_button_states()
 
     def _template_viability_dialog(self, template: str, action: str) -> bool:
@@ -1659,6 +2293,11 @@ class MainWindow(QMainWindow):
                 self._append_log(
                     f"  {i:>2}. {original}  \u2192  (skipped \u2014 {reason})"
                 )
+        self._stop_elapsed_timer()
+        self.test_rename_button.setText("Test Rename String  \u2714")
+        self._test_rename_passed = True
+        self._update_rename_warning_label()
+        self._update_button_states()
 
     def _on_build_renames(self) -> None:
         """Kick off a background rename pass across every row."""
@@ -1735,6 +2374,8 @@ class MainWindow(QMainWindow):
         self.progress_counter.setText(f"{done:,}/{total:,}")
 
     def _on_rename_finished(self, summary: dict) -> None:
+        self._stop_elapsed_timer()
+        self.build_rename_button.setText("Build Renames for all Photos  \u2714")
         total = summary.get("total", 0)
         renamed = summary.get("renamed", 0)
         skipped = summary.get("skipped", []) or []
@@ -1764,10 +2405,12 @@ class MainWindow(QMainWindow):
         self.progress_counter.setText(f"{renamed:,}/{total:,}")
 
     def _on_rename_failed(self, message: str) -> None:
+        self._stop_elapsed_timer()
         self._append_log(f"ERROR: {message}")
         QMessageBox.critical(self, "Build Renames failed", message)
 
     def _on_rename_cancelled(self) -> None:
+        self._stop_elapsed_timer()
         self._append_log("Rename cancelled by user.")
 
     def _reset_after_rename(self) -> None:
@@ -1848,23 +2491,66 @@ class MainWindow(QMainWindow):
         return self.last_report_path, destination
 
     def _on_copy_to_destination(self) -> None:
-        """Copy every row to its File_DestPath under the destination root."""
+        """Copy every row to its File_DestPath under the destination root.
+
+        Before copying, always refreshes File_DestPath / File_DestFolder
+        using the *current* destination folder and layout settings so the
+        user does not need to have configured the destination at catalog
+        time.  Previous values are overwritten.
+        """
         resolved = self._require_workbook_and_destination("Copy to Destination")
         if resolved is None:
             return
         xlsx_path, destination = resolved
         self._persist_v3_settings()
 
+        # Build an appropriate confirmation message depending on
+        # whether a rename template has been tested/built.
+        template = self.rename_template_edit.text().strip()
+        if not template:
+            copy_note = (
+                "\n\nNote: No rename template is set. Files will be "
+                "copied with their original names."
+            )
+        elif not self._test_rename_passed:
+            copy_note = (
+                "\n\nNote: A rename template is set but has not been "
+                "tested. Files will be renamed using the template during copy."
+            )
+        else:
+            copy_note = ""
+
         reply = QMessageBox.question(
             self,
             "Copy to Destination",
-            "This will copy every file in the catalog to the destination "
-            "folder using the pre-computed File_DestPath values, write a "
-            "rollback journal to the destination for Undo, and update "
-            "File_Status in the workbook.\n\nContinue?",
+            "This will re-compute destination paths using the current "
+            "Destination Folder and Folder Layout settings, then copy "
+            "every file in the catalog to that destination.  A rollback "
+            f"journal will be written for Undo.{copy_note}\n\nContinue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Re-compute File_DestPath for every row so the copy always
+        # reflects the latest settings (even if the catalog was run
+        # without a destination folder originally).
+        self._append_log("Refreshing destination paths with current settings\u2026")
+        try:
+            folder_config = self._current_folder_config()
+            rename_template = self.rename_template_edit.text().strip()
+            refresh_destination_columns(
+                xlsx_path=xlsx_path,
+                destination_folder=destination,
+                folder_config=folder_config,
+                rename_template=rename_template,
+                log_callback=self._append_log,
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Destination refresh failed",
+                f"Could not update destination paths:\n{e}",
+            )
             return
 
         self.progress_bar.setRange(0, 100)
@@ -1890,6 +2576,7 @@ class MainWindow(QMainWindow):
                 "remove with 'Delete non-keepers' follow-up if desired."
             )
         self.progress_counter.setText("Copy done")
+        self.copy_button.setText("Copy to Destination  \u2714")
 
     def _on_move_non_keepers(self) -> None:
         """Move File_DupeKeep=FALSE rows into a holding subfolder."""
@@ -1934,6 +2621,7 @@ class MainWindow(QMainWindow):
             f"{summary.get('errors', 0):,} error(s)."
         )
         self.progress_counter.setText("Move done")
+        self.move_dupe_button.setText("Move non-keepers  \u2714")
 
     def _on_delete_non_keepers(self) -> None:
         """Delete File_DupeKeep=FALSE rows in place (destructive)."""
@@ -1979,6 +2667,7 @@ class MainWindow(QMainWindow):
             f"{summary.get('errors', 0):,} error(s)."
         )
         self.progress_counter.setText("Delete done")
+        self.delete_dupe_button.setText("Delete non-keepers  \u2714")
 
     def _on_undo_last(self) -> None:
         """Reverse the most recent rollback journal in the destination."""
@@ -2028,6 +2717,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
         self.progress_counter.setText("Undo done")
+        self.undo_button.setText("Undo Last Operation  \u2714")
 
     def _on_detect_dupes_on_workbook(self) -> None:
         """
@@ -2115,6 +2805,7 @@ class MainWindow(QMainWindow):
                 "exists on disk — those rows had no hash computed."
             )
         self.progress_bar.setValue(100)
+        self.detect_dupes_button.setText("Detect Duplicates  \u2714")
         self.progress_counter.setText("Detection done")
 
     # ---- Open report / log ----------------------------------------------
@@ -2135,45 +2826,58 @@ class MainWindow(QMainWindow):
 
     # ---- Window lifecycle -----------------------------------------------
 
+    # ---- Elapsed-time helpers --------------------------------------------
+
+    def _start_elapsed_timer(self) -> None:
+        """Reset and start the elapsed-time display."""
+        self._elapsed_seconds = 0
+        self.elapsed_label.setText("0s")
+        self.elapsed_label.setVisible(True)
+        self._elapsed_timer.start()
+
+    def _stop_elapsed_timer(self) -> None:
+        """Stop the timer. The label stays visible with the final time
+        so the user can see how long the operation took."""
+        self._elapsed_timer.stop()
+
+    def _on_elapsed_tick(self) -> None:
+        """Called every second to update the elapsed-time badge."""
+        self._elapsed_seconds += 1
+        mins, secs = divmod(self._elapsed_seconds, 60)
+        if mins:
+            self.elapsed_label.setText(f"{mins}m {secs:02d}s")
+        else:
+            self.elapsed_label.setText(f"{secs}s")
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
-        # If a catalog run is in flight, ask the user before closing.
+        # Check ALL worker threads — catalog, pre-scan, rename, and v3
+        # (copy/move/delete/undo). Prompt the user for any that are running.
+        _running_threads = []
         if self.worker_thread is not None and self.worker_thread.isRunning():
+            _running_threads.append(("Cataloging", self.worker, self.worker_thread))
+        if self.prescan_thread is not None and self.prescan_thread.isRunning():
+            _running_threads.append(("Pre-Scan", self.prescan_worker, self.prescan_thread))
+        if self.rename_thread is not None and self.rename_thread.isRunning():
+            _running_threads.append(("Rename", self.rename_worker, self.rename_thread))
+        if self.v3_thread is not None and self.v3_thread.isRunning():
+            _running_threads.append(("Copy/Move/Delete", self.v3_worker, self.v3_thread))
+
+        if _running_threads:
+            names = ", ".join(t[0] for t in _running_threads)
             reply = QMessageBox.question(
-                self, "Cataloging in progress",
-                "A cataloging run is still in progress. Cancel it and exit?",
+                self, "Process still running",
+                f"The following operation is still running: {names}.\n\n"
+                "Cancel it and exit?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
-            if self.worker is not None:
-                self.worker.cancel()
-            self.worker_thread.quit()
-            self.worker_thread.wait(3000)
-
-        # A pre-scan can also be in flight — cancel it silently since it
-        # doesn't produce output the user cares about.
-        if self.prescan_thread is not None and self.prescan_thread.isRunning():
-            if self.prescan_worker is not None:
-                self.prescan_worker.cancel()
-            self.prescan_thread.quit()
-            self.prescan_thread.wait(3000)
-
-        # A rename pass may also be in flight — cancel it so the
-        # workbook isn't left half-updated. build_renames only saves
-        # when the full walk completes, so a cancel here is safe.
-        if self.rename_thread is not None and self.rename_thread.isRunning():
-            if self.rename_worker is not None:
-                self.rename_worker.cancel()
-            self.rename_thread.quit()
-            self.rename_thread.wait(3000)
-
-        # v3 Copy/Move/Delete/Undo worker — same shape as rename cancel.
-        if self.v3_thread is not None and self.v3_thread.isRunning():
-            if self.v3_worker is not None:
-                self.v3_worker.cancel()
-            self.v3_thread.quit()
-            self.v3_thread.wait(3000)
+            for _name, worker, thread in _running_threads:
+                if worker is not None and hasattr(worker, "cancel"):
+                    worker.cancel()
+                thread.quit()
+                thread.wait(3000)
 
         super().closeEvent(event)
 

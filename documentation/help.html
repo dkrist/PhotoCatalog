@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhotoCatalog — Help &amp; Documentation</title>
+<style>
+  :root {
+    --blue: #2f5b9a;
+    --blue-light: #e8eef6;
+    --blue-dark: #1e3f6f;
+    --green: #4f8a3d;
+    --red: #a73a3a;
+    --gray: #555555;
+    --gray-light: #f5f5f5;
+    --border: #d0d7e2;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    color: #222; background: #fff;
+    line-height: 1.6; max-width: 960px;
+    margin: 0 auto; padding: 24px 32px;
+  }
+  h1 {
+    color: var(--blue); font-size: 28px;
+    border-bottom: 3px solid var(--blue);
+    padding-bottom: 8px; margin-bottom: 24px;
+  }
+  h2 {
+    color: var(--blue-dark); font-size: 20px;
+    margin-top: 32px; margin-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 4px;
+  }
+  h3 {
+    color: var(--blue); font-size: 16px;
+    margin-top: 20px; margin-bottom: 8px;
+  }
+  p { margin-bottom: 10px; }
+  ul, ol { margin: 8px 0 12px 24px; }
+  li { margin-bottom: 4px; }
+  code {
+    background: var(--gray-light); padding: 1px 5px;
+    border-radius: 3px; font-size: 14px;
+    font-family: Consolas, "Courier New", monospace;
+  }
+  .flow-diagram {
+    background: var(--blue-light); border: 1px solid var(--border);
+    border-radius: 8px; padding: 20px; margin: 16px 0;
+    font-family: Consolas, monospace; font-size: 13px;
+    white-space: pre; line-height: 1.4; overflow-x: auto;
+  }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 12px 0 20px;
+  }
+  th {
+    background: var(--blue); color: #fff;
+    text-align: left; padding: 8px 12px;
+    font-weight: 600;
+  }
+  td {
+    padding: 6px 12px; border-bottom: 1px solid var(--border);
+  }
+  tr:nth-child(even) td { background: var(--gray-light); }
+  .badge {
+    display: inline-block; padding: 2px 8px;
+    border-radius: 3px; font-size: 12px;
+    font-weight: 600; color: #fff;
+  }
+  .badge-blue { background: var(--blue); }
+  .badge-green { background: var(--green); }
+  .badge-red { background: var(--red); }
+  .badge-gray { background: var(--gray); }
+  .tip {
+    background: #f0f7ed; border-left: 4px solid var(--green);
+    padding: 10px 14px; margin: 12px 0; border-radius: 0 4px 4px 0;
+  }
+  .warning {
+    background: #fdf4f0; border-left: 4px solid var(--red);
+    padding: 10px 14px; margin: 12px 0; border-radius: 0 4px 4px 0;
+  }
+  .toc { background: var(--gray-light); border-radius: 6px; padding: 16px 24px; margin: 16px 0; }
+  .toc a { color: var(--blue); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc ul { list-style: none; margin: 4px 0 4px 16px; }
+  .toc > ul { margin-left: 0; }
+  .section-nav { font-size: 13px; color: var(--gray); margin-top: -8px; margin-bottom: 12px; }
+  .section-nav a { color: var(--blue); text-decoration: none; }
+  footer {
+    margin-top: 40px; padding-top: 16px;
+    border-top: 1px solid var(--border);
+    font-size: 13px; color: var(--gray);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<h1>The Photo Catalog Project &mdash; Help Guide</h1>
+
+<div class="toc">
+  <strong>Contents</strong>
+  <ul>
+    <li><a href="#workflow">1. Workflow Overview</a></li>
+    <li><a href="#steps">2. Step-by-Step Reference</a>
+      <ul>
+        <li><a href="#step-folders">Select Folders</a></li>
+        <li><a href="#step-prescan">Pre-Scan</a></li>
+        <li><a href="#step-catalog">Start Cataloging</a></li>
+        <li><a href="#step-reports">Open Report / Log</a></li>
+        <li><a href="#step-rename">Rename Templates</a></li>
+        <li><a href="#step-destination">Destination &amp; Folder Layout</a></li>
+        <li><a href="#step-dupes">Duplicate Detection</a></li>
+        <li><a href="#step-actions">Process Actions</a></li>
+      </ul>
+    </li>
+    <li><a href="#variables">3. Rename Template Variables</a></li>
+    <li><a href="#button-summary">4. Button Enable Summary</a></li>
+    <li><a href="#settings">5. Application Settings</a></li>
+    <li><a href="#tips">6. Tips &amp; Best Practices</a></li>
+    <li><a href="#troubleshooting">7. Troubleshooting</a></li>
+    <li><a href="#about">8. About</a></li>
+  </ul>
+</div>
+
+<!-- ====================================================================== -->
+<h2 id="workflow">1. Workflow Overview</h2>
+
+<p>PhotoCatalog processes photos in a pipeline. Each step builds on the output
+of the previous one, and buttons in the UI enable progressively as their
+prerequisites are met.</p>
+
+<div class="flow-diagram">   Select Folders (Photo + Report)
+          │
+          ▼
+    Pre-Scan Folder ───▶ Start Cataloging Process
+                                │
+                                ▼
+                   Open Catalog Report / Open Process Log
+                                │
+                        ┌───────┴───────┐
+                        ▼               ▼
+               Rename Templates    Detect Duplicates
+                                        │
+                        ┌───────────────┼───────────────┐
+                        ▼               ▼               ▼
+                  Copy to          Move non-       Delete non-
+                  Destination      keepers          keepers
+                        │               │               │
+                        └───────────────┼───────────────┘
+                                        ▼
+                               Undo Last Operation</div>
+
+<!-- ====================================================================== -->
+<h2 id="steps">2. Step-by-Step Reference</h2>
+
+<h3 id="step-folders">Select Folders</h3>
+<p>Before any processing can begin, configure two folder paths using the
+<strong>Browse</strong> buttons:</p>
+<ul>
+  <li><strong>Select Photo Folder</strong> &mdash; The source folder containing
+  photos to catalog. Supports recursive scanning of subfolders.</li>
+  <li><strong>Save Report to Folder</strong> &mdash; Where the output Excel
+  workbook will be saved.</li>
+</ul>
+<p><span class="badge badge-blue">Enables</span> Pre-Scan Folder (once both folders are set).</p>
+
+<h3 id="step-prescan">Pre-Scan Folder</h3>
+<p>Performs a fast filesystem-only pass over the photo folder. Reports folder
+count, total files, supported images by extension, and non-image files. No EXIF
+extraction occurs &mdash; this is a quick sanity check so you can verify
+the folder contents before committing to a full catalog run.</p>
+<p><span class="badge badge-gray">Requires</span> Both Photo Folder and Report Folder set.<br>
+<span class="badge badge-blue">Enables</span> Start Cataloging Process.</p>
+
+<h3 id="step-catalog">Start Cataloging Process</h3>
+<p>Runs the full cataloging pipeline: scans every supported image, extracts
+EXIF/XMP metadata, and writes a formatted Excel workbook. The workbook contains
+one row per photo with columns for file info, camera data, exposure settings,
+GPS coordinates, face regions, and more.</p>
+<p>If a Destination Folder and Folder Layout are configured, the workbook also
+includes <code>File_DestFolder</code> and <code>File_DestPath</code> columns
+pre-computed for the copy pass. If Duplicate Detection is set to anything other
+than &ldquo;None,&rdquo; it runs as part of the catalog pipeline.</p>
+<p><span class="badge badge-gray">Requires</span> Successful pre-scan of the current folder.<br>
+<span class="badge badge-green">Produces</span> An Excel workbook (<code>.xlsx</code>) in the report folder.<br>
+<span class="badge badge-blue">Enables</span> Open Catalog Report, Open Process Log, Detect Duplicates, and
+(with a Destination Folder) Copy / Move / Delete / Undo.</p>
+
+<h3 id="step-reports">Open Catalog Report / Open Process Log</h3>
+<ul>
+  <li><strong>Open Catalog Report</strong> &mdash; Opens the generated Excel
+  workbook in your default spreadsheet application.</li>
+  <li><strong>Open Process Log</strong> &mdash; Opens the timestamped log file
+  for the current session. The log captures every step of the pipeline including
+  warnings and errors.</li>
+</ul>
+<p><span class="badge badge-gray">Requires</span> A completed cataloging run (the log button also enables on failure or cancellation).</p>
+
+<h3 id="step-rename">Rename File Name Template</h3>
+<p>Define a naming template using variables (see <a href="#variables">Section 3</a>).
+The template engine generates a <code>File_RenameName</code> value for every row
+in the workbook. This generates name strings only &mdash; no files are moved or
+renamed on disk.</p>
+<ul>
+  <li><strong>Test Rename String</strong> &mdash; Previews the template against
+  the first photo so you can verify the format.</li>
+  <li><strong>Build Renames for all Photos</strong> &mdash; Populates the
+  <code>File_RenameName</code> column for every row in the workbook.</li>
+</ul>
+<p><span class="badge badge-gray">Requires</span> Workbook on disk + non-empty template string.</p>
+
+<h3 id="step-destination">Destination Folder &amp; Folder Layout</h3>
+<p>Configure where photos will be copied and what subfolder structure to use.</p>
+<ul>
+  <li><strong>Destination Folder</strong> &mdash; Browse to select the target
+  location for the Copy pass.</li>
+  <li><strong>Folder Layout</strong> &mdash; Check/uncheck Year, Month, and Day
+  levels, and pick a format for each from the dropdown.</li>
+</ul>
+
+<table>
+  <tr><th>Level</th><th>Format Options</th><th>Example</th></tr>
+  <tr><td>Year</td><td><code>YYYY</code> or <code>YY</code></td><td>2019 or 19</td></tr>
+  <tr><td>Month</td><td><code>MM</code>, <code>MM - MonthName</code>, or <code>MonthName</code></td><td>06, 06 - June, or June</td></tr>
+  <tr><td>Day</td><td><code>DD</code></td><td>15</td></tr>
+</table>
+
+<p>The <strong>Example</strong> preview updates live as you change settings.</p>
+<p>No prerequisites &mdash; configure any time before running Copy.</p>
+
+<h3 id="step-dupes">Duplicate Detection</h3>
+
+<table>
+  <tr><th>Mode</th><th>Description</th><th>Speed</th></tr>
+  <tr><td>None</td><td>No duplicate detection</td><td>&mdash;</td></tr>
+  <tr><td>Filename + Size</td><td>Groups files with the same name and byte size</td><td>Fast</td></tr>
+  <tr><td>MD5 Hash</td><td>Computes file checksums for byte-exact matching</td><td>Slower</td></tr>
+</table>
+
+<p>The <strong>Hash all files</strong> checkbox forces a full MD5 sweep even for
+size-unique files (useful when you want <code>File_Hash</code> populated for
+every row, independent of duplicate detection).</p>
+
+<p>Duplicate detection can run during cataloging (set the mode before clicking
+Start) or afterward using the <strong>Detect Duplicates</strong> button.</p>
+
+<h3 id="step-actions">Process Action Buttons</h3>
+
+<p>These five buttons operate on the workbook and destination folder.
+They appear in the intended order of use.</p>
+
+<table>
+  <tr><th>Button</th><th>What It Does</th><th>Extra Requirement</th></tr>
+  <tr>
+    <td><span class="badge badge-blue">Detect Duplicates</span></td>
+    <td>Runs duplicate detection against the existing workbook</td>
+    <td>Detection mode &ne; None</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-blue">Copy to Destination</span></td>
+    <td>Copies photos into the destination folder structure</td>
+    <td>Destination Folder set</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-blue">Move non-keepers</span></td>
+    <td>Moves duplicates (File_DupeKeep&nbsp;=&nbsp;FALSE) to a <code>_non_keepers</code> subfolder</td>
+    <td>Duplicate detection completed</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-red">Delete non-keepers</span></td>
+    <td>Permanently deletes non-keeper files</td>
+    <td>Duplicate detection completed</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-blue">Undo Last Operation</span></td>
+    <td>Reverses the most recent Copy, Move, or Delete</td>
+    <td>Rollback journal exists</td>
+  </tr>
+</table>
+
+<div class="warning"><strong>Caution:</strong> Delete non-keepers permanently
+removes files. Consider using Move non-keepers first to review duplicates in
+the <code>_non_keepers</code> folder before deleting.</div>
+
+<!-- ====================================================================== -->
+<h2 id="variables">3. Rename Template Variables</h2>
+
+<table>
+  <tr><th>Variable</th><th>Description</th><th>Example</th></tr>
+  <tr><td><code>%File_Name%</code></td><td>Original filename (no extension)</td><td>IMG_1234</td></tr>
+  <tr><td><code>%Date_YY%</code></td><td>2-digit year from DateTimeOriginal</td><td>26</td></tr>
+  <tr><td><code>%Date_YYYY%</code></td><td>4-digit year</td><td>2026</td></tr>
+  <tr><td><code>%Date_MM%</code></td><td>2-digit month</td><td>04</td></tr>
+  <tr><td><code>%Date_DD%</code></td><td>2-digit day</td><td>09</td></tr>
+  <tr><td><code>%Camera_Make%</code></td><td>Camera manufacturer</td><td>Canon</td></tr>
+</table>
+
+<p><strong>Example template:</strong><br>
+<code>%Date_YYYY%-%Date_MM%-%Date_DD%_%Camera_Make%_%File_Name%</code><br>
+<strong>Produces:</strong> <code>2026-04-09_Canon_IMG_1234.jpg</code></p>
+
+<!-- ====================================================================== -->
+<h2 id="button-summary">4. Button Enable Summary</h2>
+
+<table>
+  <tr><th>Button</th><th>Enabled When</th></tr>
+  <tr><td>Pre-Scan Folder</td><td>Photo Folder + Report Folder set</td></tr>
+  <tr><td>Start Cataloging</td><td>Pre-scan completed for current folder</td></tr>
+  <tr><td>Open Catalog Report</td><td>Cataloging completed successfully</td></tr>
+  <tr><td>Open Process Log</td><td>Cataloging completed (success, failure, or cancel)</td></tr>
+  <tr><td>Test Rename String</td><td>Workbook exists + template entered</td></tr>
+  <tr><td>Build Renames</td><td>Workbook exists + template entered</td></tr>
+  <tr><td>Detect Duplicates</td><td>Workbook exists</td></tr>
+  <tr><td>Copy to Destination</td><td>Workbook exists + Destination Folder set</td></tr>
+  <tr><td>Move non-keepers</td><td>Workbook + Destination + dupes detected</td></tr>
+  <tr><td>Delete non-keepers</td><td>Workbook + Destination + dupes detected</td></tr>
+  <tr><td>Undo Last Operation</td><td>Workbook + Destination + rollback journal exists</td></tr>
+</table>
+
+<!-- ====================================================================== -->
+<h2 id="settings">5. Application Settings</h2>
+
+<p>PhotoCatalog stores user preferences in a JSON file at:</p>
+<p><code>%APPDATA%\PhotoCatalog\settings.json</code></p>
+
+<p>Settings include:</p>
+<ul>
+  <li><strong>save_report_to</strong> &mdash; Default report output folder</li>
+  <li><strong>log_file_folder</strong> &mdash; Where log files are written</li>
+  <li><strong>default_scan_folder</strong> &mdash; Starting folder for the photo picker</li>
+  <li><strong>enable_face_recognition</strong> &mdash; Toggle face detection during cataloging</li>
+  <li><strong>log_level</strong> &mdash; Logging verbosity (DEBUG, INFO, WARNING, ERROR)</li>
+  <li><strong>Recent folders</strong> &mdash; Previously used source and destination paths</li>
+</ul>
+
+<p>Settings are saved automatically when you close the application or complete
+a cataloging run.</p>
+
+<!-- ====================================================================== -->
+<h2 id="tips">6. Tips &amp; Best Practices</h2>
+
+<div class="tip"><strong>Always pre-scan first.</strong> The pre-scan is fast
+and helps you verify folder contents before committing to a full
+catalog run. It will surface non-image files and unexpected folder
+counts early.</div>
+
+<div class="tip"><strong>Check the Example preview.</strong> The Destination
+Folder Layout preview updates in real time. Use it to confirm your folder
+structure before copying thousands of files.</div>
+
+<div class="tip"><strong>Detect duplicates after the fact.</strong> If you ran
+a catalog with Duplicate Detection set to &ldquo;None,&rdquo; you can still
+detect duplicates afterward using the Detect Duplicates button &mdash; no need
+to re-scan the entire library.</div>
+
+<div class="tip"><strong>Move before you delete.</strong> Use &ldquo;Move
+non-keepers&rdquo; to review duplicates in a staging folder before committing
+to permanent deletion.</div>
+
+<div class="tip"><strong>Check the log when something seems off.</strong> The
+Process Log captures detailed information about every operation, including
+warnings for photos with missing or unusual metadata.</div>
+
+<!-- ====================================================================== -->
+<h2 id="troubleshooting">7. Troubleshooting</h2>
+
+<h3>Buttons are grayed out</h3>
+<p>Each button has prerequisites that must be met before it enables. See the
+<a href="#button-summary">Button Enable Summary</a> table. The most common
+cause is that a cataloging run hasn't been completed yet in this session.</p>
+
+<h3>Pre-scan shows unexpected file counts</h3>
+<p>PhotoCatalog scans recursively. If your photo folder contains subfolders
+with system or hidden files, those folders are pruned during scanning. Check
+that your photos are in supported formats (JPEG, TIFF, PNG, HEIF/HEIC, WebP,
+or RAW formats: CR2, CR3, NEF, ARW, DNG, ORF, RW2).</p>
+
+<h3>Workbook is locked / cannot be written</h3>
+<p>If the Excel workbook is open in another application (Excel, LibreOffice),
+PhotoCatalog cannot update it. Close the workbook, then retry the operation.</p>
+
+<h3>Missing DateTimeOriginal</h3>
+<p>Some photos (especially screenshots, scanned images, or edited files) may
+not have EXIF date metadata. The catalog will use the file's filesystem date
+as a fallback and flag these with a <code>File_Concern</code> note. Rename
+templates that use date variables will produce the filesystem date for these
+files.</p>
+
+<h3>Duplicate detection finds no duplicates</h3>
+<p>If using Filename + Size mode, files must have identical names <em>and</em>
+byte sizes to match. Consider switching to MD5 Hash mode for thorough
+detection, especially if files have been renamed.</p>
+
+<!-- ====================================================================== -->
+<h2 id="about">8. About</h2>
+
+<p><strong>The Photo Catalog Project</strong> &mdash; V3.1</p>
+<p>A desktop application for cataloging, organizing, and managing photo
+libraries. Built with Python and PyQt6.</p>
+<p>Source code and documentation available at
+<a href="https://github.com/dkrist/PhotoCatalog">github.com/dkrist/PhotoCatalog</a>.</p>
+
+<footer>
+  The Photo Catalog Project &mdash; Built with Claude
+</footer>
+
+</body>
+</html>

@@ -24,6 +24,7 @@ SPEC_DIR = Path(SPECPATH).resolve()          # noqa: F821 - provided by PyInstal
 PROJECT_ROOT = SPEC_DIR.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 IMAGES_DIR = PROJECT_ROOT / "Images"
+DOCS_DIR = PROJECT_ROOT / "documentation"
 ICON_PATH = IMAGES_DIR / "photocatalog.ico"
 
 block_cipher = None
@@ -36,6 +37,7 @@ a = Analysis(
     datas=[
         # (source, dest-folder-relative-to-app-root)
         (str(IMAGES_DIR), "Images"),
+        (str(DOCS_DIR / "help.html"), "documentation"),
     ],
     # Face recognition is optional; keep it discoverable if the user later
     # installs the dependency alongside the packaged app. For now we simply
@@ -59,7 +61,8 @@ a = Analysis(
         "PyQt6.QtQuick3D", "PyQt6.QtQuickWidgets", "PyQt6.QtRemoteObjects",
         "PyQt6.QtScxml", "PyQt6.QtSensors", "PyQt6.QtSerialBus",
         "PyQt6.QtSerialPort", "PyQt6.QtSpatialAudio", "PyQt6.QtSql",
-        "PyQt6.QtStateMachine", "PyQt6.QtSvg", "PyQt6.QtSvgWidgets",
+        # Note: QtSvg kept for SVG icon support (camera-icon-white.svg, checkmark-white.svg)
+        "PyQt6.QtStateMachine", "PyQt6.QtSvgWidgets",
         "PyQt6.QtTest", "PyQt6.QtTextToSpeech", "PyQt6.QtWebChannel",
         "PyQt6.QtWebEngineCore", "PyQt6.QtWebEngineWidgets",
         "PyQt6.QtWebSockets", "PyQt6.QtXml",

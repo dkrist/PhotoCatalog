@@ -52,7 +52,6 @@ from openpyxl.styles import PatternFill
 # comes from. The GUI's help label reads this dict so the two never drift.
 RENAME_VARIABLES: Dict[str, str] = {
     "%File_Name%":      "FileName stem (filename without extension)",
-    "%File_Extension%": "Lowercase extension, including the dot (e.g. .jpg)",
     "%Date_YY%":        "2-digit year from DateTimeOriginal (e.g. 26)",
     "%Date_YYYY%":      "4-digit year from DateTimeOriginal (e.g. 2026)",
     "%Date_MM%":        "2-digit month from DateTimeOriginal (e.g. 04)",
@@ -159,16 +158,9 @@ def check_template_viability(template: str) -> Tuple[List[str], List[str]]:
             "Unknown variable(s): " + ", ".join(sorted(set(unknown)))
         )
 
-    # Rule 1 — must produce a file extension.
-    ends_with_literal_ext = any(
-        template.lower().rstrip().endswith(ext) for ext in _RECOGNIZED_EXTENSIONS
-    )
-    if "%File_Extension%" not in found and not ends_with_literal_ext:
-        errors.append(
-            "Template must produce a file extension. "
-            "Add %File_Extension% at the end, or type a literal "
-            "extension like .jpg."
-        )
+    # Rule 1 — extension is now auto-appended by the engine, so we
+    # only warn if the user typed %File_Extension% explicitly (it's no
+    # longer a recognised variable and would be flagged as unknown).
 
     # Rule 2 — must have at least one variable token so not every photo
     # renames to the same literal string.
@@ -294,6 +286,12 @@ def render_row(
     result = template
     for token, value in substitutions.items():
         result = result.replace(token, value)
+
+    # Auto-append the original file extension so the user never has to
+    # include it in their template. If the result already ends with the
+    # extension (e.g. user typed a literal .jpg), skip the append.
+    if file_ext and not result.lower().endswith(file_ext.lower()):
+        result += file_ext
     return result, None, used_fallback
 
 

@@ -67,16 +67,18 @@ Before publishing:
 
 ## Bump the version number
 
-Two places to update for each release:
+Three places to update for each release:
 
-1. **`packaging\PhotoCatalog.iss`** — edit the `MyAppVersion` define near
+1. **`scripts\gui_main.py`** — edit `APP_VERSION` and `APP_RELEASE_DATE`
+   near the top. These drive the header label and About dialog.
+2. **`packaging\PhotoCatalog.iss`** — edit the `MyAppVersion` define near
    the top. This drives the setup filename and the "Programs and Features"
    entry.
-2. **Tag** the git commit with a matching `v<version>` tag (see next step).
+3. **Tag** the git commit with a matching `v<version>` tag (see next step).
 
-> Note: the version label shown in the app header (`V2 – M/D/YYYY`) is
-> driven by the mtime of `scripts\gui_main.py` and updates automatically
-> whenever that file changes. No manual edit needed there.
+> Note: the version label shown in the app header is driven by
+> `APP_VERSION` and `APP_RELEASE_DATE` constants at the top of
+> `scripts\gui_main.py`. Bump both when tagging a new release.
 
 ---
 
@@ -85,13 +87,13 @@ Two places to update for each release:
 1. Commit and push any code changes and an updated `CHANGELOG.md`.
 2. Create a git tag:
    ```powershell
-   git tag v2.0.0 -m "PhotoCatalog v2.0.0"
-   git push origin v2.0.0
+   git tag v3.1.0 -m "PhotoCatalog v3.1.0"
+   git push origin v3.1.0
    ```
 3. Go to <https://github.com/dkrist/PhotoCatalog/releases> and click
    **Draft a new release**.
 4. Choose the tag you just pushed.
-5. Title: `PhotoCatalog v2.0.0`
+5. Title: `PhotoCatalog v3.1.0`
 6. Body: paste the `[Unreleased]` section from `CHANGELOG.md`, plus a short
    "Install" section pointing non-technical users at the setup .exe. For
    example:

@@ -290,6 +290,73 @@ def populate_destination_columns(
     return summary
 
 
+def refresh_destination_columns(
+    xlsx_path: str,
+    destination_folder: str,
+    folder_config: FolderConfig,
+    rename_template: str,
+    log_callback: Optional[LogCallback] = None,
+) -> Dict:
+    """Re-compute File_DestFolder / File_DestPath / File_RenameName for
+    every row in an existing workbook using the *current* destination
+    folder and layout settings, then save the workbook.
+
+    This makes "Copy to Destination" self-sufficient: the user does not
+    need to have set the destination folder at catalog time.  Previous
+    values in these columns are unconditionally overwritten so the copy
+    always reflects the latest settings.
+
+    Returns the summary dict from :func:`populate_destination_columns`.
+    """
+    log = log_callback or _noop_log
+    log("Refreshing destination columns with current settings...")
+
+    wb = load_workbook(xlsx_path)
+    ws = wb.active
+    col_map = _column_index_map(ws)
+
+    # Ensure the three destination columns exist (adds them if missing).
+    _ensure_column(ws, col_map, "File_RenameName")
+    _ensure_column(ws, col_map, "File_DestFolder")
+    _ensure_column(ws, col_map, "File_DestPath")
+    _ensure_column(ws, col_map, "File_Status")
+
+    # Re-read col_map after potential new columns were added.
+    col_map = _column_index_map(ws)
+
+    # Read every row into a dict so populate_destination_columns can work.
+    rows: List[Dict] = []
+    for row_idx in range(2, ws.max_row + 1):
+        rows.append(_row_dict(ws, row_idx, col_map))
+
+    summary = populate_destination_columns(
+        rows,
+        destination_root=destination_folder,
+        folder_config=folder_config,
+        rename_template=rename_template,
+    )
+
+    # Write the updated values back into the workbook.
+    rename_col = col_map["File_RenameName"]
+    dfolder_col = col_map["File_DestFolder"]
+    dest_col = col_map["File_DestPath"]
+    status_col = col_map["File_Status"]
+
+    for i, row in enumerate(rows, start=2):
+        ws.cell(row=i, column=rename_col, value=row.get("File_RenameName"))
+        ws.cell(row=i, column=dfolder_col, value=row.get("File_DestFolder"))
+        ws.cell(row=i, column=dest_col, value=row.get("File_DestPath"))
+        ws.cell(row=i, column=status_col, value=row.get("File_Status"))
+
+    wb.save(xlsx_path)
+    wb.close()
+    log(
+        f"  {summary['resolved']} destination paths resolved, "
+        f"{summary['unknown_date']} to Unknown_Date."
+    )
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # Copy pass
 # ---------------------------------------------------------------------------

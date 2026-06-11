@@ -7,6 +7,21 @@ Built to make large family photo archives **browsable, sortable, and searchable 
 ![alt text](<Images/Screenshot 2026-04-15 155450.png>)
 ---
 
+## What's New in v3.1.0
+
+v3.1 polishes the UI and adds workflow guardrails that make the rename-and-reorganize process much harder to get wrong:
+
+- **Clickable rename template builder.** Instead of typing `%Variable%` tokens, click pill-shaped buttons (YYYY, MM, DD, Make, Name, separators) to build the template visually. The extension is now auto-appended — no more forgetting `%File_Extension%`.
+- **Test-before-Build gating.** Build Renames stays disabled until Test Rename passes on the current template, with a visible warning label explaining why.
+- **Checkmarks on every action button** show which steps are complete and reset when inputs change.
+- **Elapsed time badge** during long operations, keyboard shortcuts (`Ctrl+P/Enter/T/D/Z`), close confirmation for running processes, source=destination guard, and non-keepers folder path label.
+- **Rounded buttons, white SVG header icon, HTML tooltips, section separators** — the whole UI is more polished and consistent.
+- **Packaging fix:** the Help file and SVG icons are now properly bundled in the installer.
+
+See the [v3.1.0 entry in the CHANGELOG](documentation/CHANGELOG.md) for the full breakdown.
+
+---
+
 ## What's New in v3.0.0
 
 v3 expands PhotoCatalog from "scan + rename in place" to a complete **scan → detect duplicates → reorganize** workflow:
@@ -42,7 +57,7 @@ See the [v3.0.0 entry in the CHANGELOG](documentation/CHANGELOG.md) for the full
 
 ### Rename engine
 
-- **Rename template engine** — construct new filenames from EXIF fields using `%Variable%` tokens (e.g. `%Date_YYYY%-%Date_MM%-%Date_DD%_%Camera_Make%_%File_Name%%File_Extension%`), preview the first 10 rows, then write rendered names into the `File_RenameName` column for every photo.
+- **Rename template engine** — construct new filenames from EXIF fields using `%Variable%` tokens (e.g. `%Date_YYYY%-%Date_MM%-%Date_DD%_%Camera_Make%_%File_Name%`), preview the first 10 rows, then write rendered names into the `File_RenameName` column for every photo.
 - **Pre-flight template validation** blocks empty templates, missing extensions, and unknown tokens before any rendering happens, and warns about templates likely to produce mass collisions.
 
 ### v3 reorganization workflow
@@ -85,7 +100,7 @@ The top-down order of the main window mirrors the workflow:
 5. **Start Cataloging Process** — the main run. Streams progress to the bar and log panel, and writes the workbook when done.
 6. **Open Catalog Report** — opens the workbook in Excel for review.
 
-For the optional rename step, fill in the **Rename File Name Template** (e.g. `%Date_YYYY%-%Date_MM%-%Date_DD%_%Camera_Make%_%File_Name%%File_Extension%`), click **Test Rename String** to preview the first 10 rows, then **Build Renames for all Photos** to fill the `File_RenameName` column for every row.
+For the optional rename step, fill in the **Rename File Name Template** (e.g. `%Date_YYYY%-%Date_MM%-%Date_DD%_%Camera_Make%_%File_Name%`), click **Test Rename String** to preview the first 10 rows, then **Build Renames for all Photos** to fill the `File_RenameName` column for every row.
 
 For the v3 reorganize-into-destination workflow:
 
